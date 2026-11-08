@@ -10,6 +10,7 @@ from .commands.bootstrap import configure_windows_console, initializing_group, r
 from .commands.context import current_context
 from .commands.glossary import register_glossary_commands
 from .commands.inspection import register_inspection_commands
+from .commands.repair import register_repair_commands
 from .commands.workflows import register_workflows_commands
 from .model_commands import register_model_commands
 
@@ -30,6 +31,7 @@ def create_app(*, console: Console | None = None) -> typer.Typer:
     register_workflows_commands(application, current_context)
     register_inspection_commands(application, current_context)
     register_glossary_commands(application, current_context)
+    register_repair_commands(application)
     return application
 
 
