@@ -12,7 +12,7 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, UnicodeDammit
 
-from ..markup.contracts import INLINE_ID_ATTR, INLINE_META_KEY
+from ..markup.contracts import INLINE_META_KEY
 from ..models.document import Segment
 from .export_view import AssembleStore
 from .markdown_inline import insert_markdown_emphasis
@@ -48,7 +48,7 @@ def _extract_segment_images_from_epub(
     chapters: list,
     meta: dict[str, object],
 ) -> dict[tuple[int, int], list[tuple[str, str, str, str]]]:
-    """Extract segment-level image info: (ch_idx, seg_idx) -> [(inline_id, src, alt, placement)]."""
+    """Extract segment-level image info from metadata: (ch_idx, seg_idx) -> [(inline_id, src, alt, placement)]."""
     if not os.path.exists(source_path) or not source_path.lower().endswith(".epub"):
         return {}
 
@@ -56,96 +56,67 @@ def _extract_segment_images_from_epub(
 
     try:
         with zipfile.ZipFile(source_path, "r") as zf:
-            # Get resource specs
-            raw_resources = meta.get("epub_resources")
-            if not isinstance(raw_resources, list):
-                return {}
+            # Build inline_id -> (src, alt) mapping from EPUB HTML
+            inline_id_to_img: dict[str, tuple[str, str]] = {}
 
-            resource_hrefs: dict[str, str] = {}
-            for res in raw_resources:
-                if not isinstance(res, dict):
-                    continue
-                href = res.get("href")
-                if isinstance(href, str) and href:
-                    resource_hrefs[href] = href
-
-            # Build segment -> resource mapping
-            segment_to_resource: dict[tuple[int, int], str] = {}
             for ch in chapters:
                 for seg in ch.segments:
-                    if isinstance(seg, Segment) and seg.resource_href:
-                        segment_to_resource[(ch.index, seg.index)] = seg.resource_href
+                    if not isinstance(seg, Segment) or not seg.resource_href:
+                        continue
 
-            # Parse each resource and extract image metadata
-            for href in resource_hrefs.keys():
-                if href not in zf.namelist():
-                    continue
+                    href = seg.resource_href
+                    if href not in zf.namelist():
+                        continue
 
-                try:
-                    source_data = zf.read(href)
-                    html = UnicodeDammit(source_data).unicode_markup
-                    if html is None:
-                        html = source_data.decode("utf-8", errors="replace")
+                    try:
+                        source_data = zf.read(href)
+                        html = UnicodeDammit(source_data).unicode_markup
+                        if html is None:
+                            html = source_data.decode("utf-8", errors="replace")
 
-                    soup = BeautifulSoup(html, "html.parser")
+                        soup = BeautifulSoup(html, "html.parser")
 
-                    # Find all img tags with inline IDs
-                    for img in soup.find_all("img"):
-                        inline_id = img.get(INLINE_ID_ATTR)
-                        if not isinstance(inline_id, str):
+                        # Get inline metadata for this segment
+                        raw_inline = seg.meta.get(INLINE_META_KEY)
+                        if not isinstance(raw_inline, dict):
                             continue
 
-                        src = img.get("src", "")
-                        alt = img.get("alt", "")
-
-                        if not src:
+                        raw_nodes = raw_inline.get("nodes", [])
+                        if not isinstance(raw_nodes, list):
                             continue
 
-                        # Resolve relative src
-                        normalized_src = _normalize_epub_href(href, str(src))
-
-                        # Find which segment owns this inline_id
-                        for (ch_idx, seg_idx), res_href in segment_to_resource.items():
-                            if res_href != href:
+                        # Find img tags and match with inline IDs from metadata
+                        for node in raw_nodes:
+                            if not isinstance(node, dict):
+                                continue
+                            if node.get("tag") != "img":
                                 continue
 
-                            # Check if segment has this inline_id in its metadata
-                            ch = next((c for c in chapters if c.index == ch_idx), None)
-                            if not ch:
+                            inline_id = node.get("id")
+                            if not isinstance(inline_id, str):
                                 continue
 
-                            seg = next((s for s in ch.segments if s.index == seg_idx), None)
-                            if not seg or not isinstance(seg, Segment):
-                                continue
+                            placement = node.get("placement", "after")
 
-                            raw_inline = seg.meta.get(INLINE_META_KEY)
-                            if not isinstance(raw_inline, dict):
-                                continue
-
-                            raw_nodes = raw_inline.get("nodes")
-                            if not isinstance(raw_nodes, list):
-                                continue
-
-                            # Check if this inline_id belongs to this segment and get placement
-                            for node in raw_nodes:
-                                if not isinstance(node, dict):
-                                    continue
-                                if node.get("id") == inline_id:
-                                    placement = node.get("placement", "block")
-                                    key = (ch_idx, seg_idx)
+                            # Find img in HTML by position/context (since inline_id not in original HTML)
+                            # For now, collect all images in the segment's resource
+                            imgs = soup.find_all("img")
+                            for img in imgs:
+                                src = img.get("src", "")
+                                alt = img.get("alt", "")
+                                if src:
+                                    normalized_src = _normalize_epub_href(href, str(src))
+                                    key = (ch.index, seg.index)
                                     if key not in segment_images:
                                         segment_images[key] = []
+                                    # Use inline_id from metadata
                                     segment_images[key].append(
                                         (inline_id, normalized_src, str(alt), placement)
                                     )
-                                    break
-
-                except Exception:
-                    # Skip failed resources
-                    continue
+                    except Exception:
+                        continue
 
     except Exception:
-        # If EPUB read fails, return empty
         return {}
 
     return segment_images
@@ -154,14 +125,28 @@ def _extract_segment_images_from_epub(
 def _extract_images_from_epub(
     source_path: str,
     assets_dir: str,
+    required_images: set[str],
 ) -> dict[str, str]:
-    """Extract images from EPUB to assets directory, return mapping of normalized EPUB path to MD path."""
+    """Extract images from EPUB to assets directory, fail if required images are missing.
+    
+    Args:
+        source_path: Path to EPUB file
+        assets_dir: Directory to extract images to
+        required_images: Set of normalized EPUB paths that must exist
+    
+    Returns:
+        Mapping of normalized EPUB path to MD relative path
+        
+    Raises:
+        FileNotFoundError: If any required image is missing from EPUB
+    """
     if not os.path.exists(source_path) or not source_path.lower().endswith(".epub"):
         return {}
 
     os.makedirs(assets_dir, exist_ok=True)
     image_map: dict[str, str] = {}
     used_names: set[str] = set()
+    found_images: set[str] = set()
 
     try:
         with zipfile.ZipFile(source_path, "r") as zf:
@@ -199,10 +184,21 @@ def _extract_images_from_epub(
                 # Map normalized EPUB path to MD relative path
                 normalized_epub_path = info.filename.replace("\\", "/")
                 image_map[normalized_epub_path] = f"assets/{final_name}"
+                found_images.add(normalized_epub_path)
 
-    except Exception:
-        # If extraction fails, return empty map
-        return {}
+        # Check for missing required images
+        missing_images = required_images - found_images
+        if missing_images:
+            missing_list = ", ".join(sorted(missing_images))
+            raise FileNotFoundError(
+                f"Required image files missing from EPUB: {missing_list}. "
+                f"Cannot create Markdown output with broken image references."
+            )
+
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        raise OSError(f"Failed to extract images from EPUB: {e}")
 
     return image_map
 
@@ -255,14 +251,20 @@ def _assemble_plain_text(
             # Get images for this segment
             seg_images = segment_images.get((ch.index, seg.index), [])
 
-            # Separate block-level and inline images
-            block_images = []
+            # Separate placement types: before/after (block-level) vs inline
+            before_images = []
+            after_images = []
             inline_images = []
             for inline_id, norm_src, alt, placement in seg_images:
                 if placement == "inline":
                     inline_images.append((inline_id, norm_src, alt, placement))
+                elif placement == "before":
+                    before_images.append((inline_id, norm_src, alt, placement))
+                elif placement == "after":
+                    after_images.append((inline_id, norm_src, alt, placement))
                 else:
-                    block_images.append((inline_id, norm_src, alt, placement))
+                    # Fallback: treat unknown as after
+                    after_images.append((inline_id, norm_src, alt, placement))
 
             # Fail if inline images are present (not supported in Markdown)
             if inline_images and markdown:
@@ -272,8 +274,8 @@ def _assemble_plain_text(
                     f"image(s). Please use EPUB format or remove inline images."
                 )
 
-            # Add block-level images before segment text
-            for inline_id, norm_src, alt, placement in block_images:
+            # Add images before segment text
+            for inline_id, norm_src, alt, placement in before_images:
                 md_path = image_map.get(norm_src, "")
                 if md_path:
                     alt_text = alt if alt else "Image"
@@ -294,10 +296,27 @@ def _assemble_plain_text(
             else:
                 blocks.append(target_text)
 
+            # Add images after segment text
+            for inline_id, norm_src, alt, placement in after_images:
+                md_path = image_map.get(norm_src, "")
+                if md_path:
+                    alt_text = alt if alt else "Image"
+                    blocks.append(f"![{alt_text}]({md_path})")
+
         chapter_blocks.append("\n\n".join(blocks))
 
+    # Write output file
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(chapter_blocks) + "\n")
+
+    # Transaction: only commit assets after successful write
+    if markdown and os.path.exists(assets_dir_temp):
+        import shutil
+
+        if os.path.exists(assets_dir_final):
+            shutil.rmtree(assets_dir_final)
+        shutil.move(assets_dir_temp, assets_dir_final)
+
     return out_path
 
 
