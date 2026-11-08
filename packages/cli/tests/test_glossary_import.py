@@ -26,7 +26,7 @@ class TestGlossaryImport(unittest.TestCase):
 
     def _init_store(self) -> FileStorage:
         """Initialize a minimal translation state."""
-        config = Config.from_dict(
+        Config.from_dict(
             {"language": {"source": "en", "target": "zh"}, "paths": {"state_dir": str(self.state_dir)}}
         )
         run_dir = self.state_dir / "test-novel" / "targets" / "zh"
