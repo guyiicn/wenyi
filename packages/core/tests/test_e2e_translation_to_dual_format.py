@@ -95,7 +95,7 @@ def _create_test_epub(epub_path: str) -> None:
 
 
 def _translation_handler(messages, tier, json_mode):
-    """Fake LLM handler: return Chinese with different length/word order than source."""
+    """Fake LLM handler: return Chinese with real semantic translations."""
     import re
     import json
     from tests.fake_llm import routing_handler as base_routing_handler
@@ -103,30 +103,119 @@ def _translation_handler(messages, tier, json_mode):
     system = messages[0]["content"]
     user = messages[-1]["content"]
 
-    # Only override main translation with markers, everything else use routing_handler
+    # Translation request: check for explicit "[English paragraphs to translate]" structure
     if "literary translator" in system.lower() and "[English paragraphs to translate]" in user:
         # Extract numbered paragraphs
         paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)
         if not paragraphs:
             return base_routing_handler(messages, tier, json_mode)
         
-        # Translate preserving inline markers
+        # Semantic translation mapping (preserve inline markers exactly as received)
         translations = []
         marker_pattern = r"(\[\[[A-Z_0-9]+_(?:START|END)\]\])"
+        
         for idx, text in paragraphs:
+            # Split by markers to separate text from markers
             parts = re.split(marker_pattern, text)
             result = []
+            
             for part in parts:
                 if re.match(marker_pattern, part):
+                    # Keep marker as-is
                     result.append(part)
                 elif part.strip():
-                    result.append(f"译{idx}")
+                    # Translate text content
+                    if "Chapter One" in part:
+                        result.append("第一章")
+                    elif "First paragraph with" in part:
+                        result.append("第一段有")
+                    elif "simple emphasis" in part:
+                        result.append("简单强调")
+                    elif " text." in part:
+                        result.append("文本。")
+                    elif "Second paragraph" in part:
+                        result.append("第二段")
+                    elif "with" in part and len(part.strip()) < 10:
+                        result.append("有")
+                    elif "nested emphasis" in part:
+                        result.append("嵌套强调")
+                    elif " inside" in part:
+                        result.append("在")
+                    elif " words." in part:
+                        result.append("词内。")
+                    elif "Third paragraph has" in part:
+                        result.append("第三段有")
+                    elif "classed span" in part:
+                        result.append("类别跨度")
+                    elif " and" in part and len(part.strip()) < 10:
+                        result.append("和")
+                    elif "mid-sentence" in part:
+                        result.append("句中")
+                    elif "multi-level" in part:
+                        result.append("多级")
+                    elif " marks" in part:
+                        result.append("标记")
+                    elif " here." in part:
+                        result.append("在这里。")
+                    elif "Fourth paragraph" in part:
+                        result.append("第四段链接到第一个锚点。")
+                    elif "links to first" in part:
+                        result.append("")  # Already included above
+                    elif " anchor." in part:
+                        result.append("")  # Already included above
+                    else:
+                        # Keep unknown short parts, translate longer ones as placeholder
+                        if len(part.strip()) < 3:
+                            result.append(part)
+                        else:
+                            result.append(f"译{idx}")
                 else:
                     result.append(part)
+            
             translations.append("".join(result))
+        
         return json.dumps({"translations": translations}, ensure_ascii=False)
     
-    # Fallback to routing_handler for all other requests
+    # Polish request: change length/word order but preserve semantic emphasis
+    if "literary translator" in system.lower() and "Polish the translations" in user:
+        # Extract previous translations from conversation
+        for msg in reversed(messages[:-1]):
+            if msg.get("role") == "assistant":
+                try:
+                    prev = json.loads(msg["content"])
+                    trans = prev.get("translations", [])
+                    if trans:
+                        polished = []
+                        for t in trans:
+                            # Change text while preserving markers
+                            marker_pattern = r"(\[\[[A-Z_0-9]+_(?:START|END)\]\])"
+                            parts = re.split(marker_pattern, t)
+                            result = []
+                            for part in parts:
+                                if re.match(marker_pattern, part):
+                                    result.append(part)
+                                elif part.strip():
+                                    # Polish: change word order/length but keep semantics
+                                    polished_text = part
+                                    if "第一段" in part:
+                                        polished_text = part.replace("第一段有", "首段包含")
+                                    elif "第二段" in part:
+                                        polished_text = part.replace("第二段", "次段")
+                                    elif "第三段" in part:
+                                        polished_text = part.replace("第三段有", "第三段落拥有")
+                                    elif "第四段" in part:
+                                        polished_text = part.replace("第四段", "第四段落")
+                                    elif "第一章" in part:
+                                        polished_text = part  # Keep title simple
+                                    result.append(polished_text)
+                                else:
+                                    result.append(part)
+                            polished.append("".join(result))
+                        return json.dumps({"polished": polished}, ensure_ascii=False)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    
+    # Fallback to routing_handler for title/digest/analysis etc
     return base_routing_handler(messages, tier, json_mode)
 
 
@@ -175,28 +264,26 @@ def test_e2e_translation_with_emphasis_images_and_dual_format_export():
         assert chapter.title in ("Chapter One", "标题0")
         assert len(chapter.segments) == 5  # Title + 4 paragraphs
 
-        # Verify translations were applied
-        # Polish handler changes text: routing_handler preserves markers
-        assert chapter.segments[0].target  # Just verify target exists
-        assert "强调" in chapter.segments[0].target
-
-        # Verify target_inline metadata exists
-        seg0 = chapter.segments[0]
-        target_inline = seg0.meta.get("target_inline")
+        # Verify translations were applied with real semantic content
+        seg1 = chapter.segments[1]  # "First paragraph with simple emphasis text"
+        assert "强调" in seg1.target, f"Expected '强调' in segment 1, got: {seg1.target}"
+        
+        # Verify target_inline metadata exists with preserved emphasis
+        target_inline = seg1.meta.get("target_inline")
         assert target_inline is not None, "target_inline must exist after translation"
         assert isinstance(target_inline, dict)
-        assert "items" in target_inline
-
-        # Verify emphasis items map to Chinese phrases
-        items = target_inline["items"]
-        assert len(items) > 0, "Should have emphasis items"
-        # Check that at least one item has Chinese text
-        has_chinese = any("强调" in item.get("target_text", "") for item in items)
-        assert has_chinese, "target_inline items should reference Chinese phrases"
+        assert "ranges" in target_inline, "target_inline must have ranges"
+        
+        # Verify ranges reference Chinese emphasis positions
+        ranges = target_inline["ranges"]
+        assert len(ranges) > 0, "Should have emphasis ranges"
+        # At least one range should be 'em' tag
+        has_em = any(r.get("tag") == "em" for r in ranges)
+        assert has_em, "Should have 'em' tag in ranges"
 
         # Export Markdown
         md_path = str(tmp / "output.md")
-        orch.assemble(store, out_path=md_path, out_format="markdown")
+        orch.run_assemble(epub_path, out_path=md_path, out_format="markdown")
         assert Path(md_path).exists()
 
         md_content = Path(md_path).read_text(encoding="utf-8")
@@ -223,7 +310,7 @@ def test_e2e_translation_with_emphasis_images_and_dual_format_export():
 
         # Export EPUB
         epub_out_path = str(tmp / "output.epub")
-        orch.assemble(store, out_path=epub_out_path, out_format="epub")
+        orch.run_assemble(epub_path, out_path=epub_out_path, out_format="epub")
         assert Path(epub_out_path).exists()
 
         # Verify EPUB structure
@@ -249,8 +336,8 @@ def test_e2e_translation_with_emphasis_images_and_dual_format_export():
             # Read translated chapter
             chapter_html = zf.read("OEBPS/chapter1.xhtml").decode("utf-8")
 
-            # Verify Chinese text present
-            assert "润色后译文" in chapter_html or "译文" in chapter_html
+            # Verify Chinese polished text present
+            assert "首段包含" in chapter_html or "简单强调" in chapter_html
 
             # Verify emphasis tags preserved
             assert "<em>" in chapter_html or "<i>" in chapter_html
@@ -269,7 +356,7 @@ def test_e2e_translation_with_emphasis_images_and_dual_format_export():
         initial_call_count = len(client.calls)
         # Export again - should not trigger translation
         md_path2 = str(tmp / "output2.md")
-        orch.assemble(store, out_path=md_path2, out_format="markdown")
+        orch.run_assemble(epub_path, out_path=md_path2, out_format="markdown")
         assert len(client.calls) == initial_call_count, "Export should not call LLM again"
 
 
@@ -335,7 +422,7 @@ def test_e2e_translation_state_must_have_target_inline():
 
         # Should raise error about missing target_inline
         with pytest.raises((ValueError, KeyError, AssertionError)):
-            orch.assemble(store, out_path=epub_out, out_format="epub")
+            orch.run_assemble(epub_path, out_path=epub_out, out_format="epub")
 
         # Verify no output file created
         assert not Path(epub_out).exists(), "Failed assembly should not create output"
