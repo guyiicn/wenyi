@@ -76,13 +76,12 @@ def sdk(monkeypatch):
             ],
         )
 
-    monkeypatch.setattr(
-        OpenAICompatibleBaseClient,
-        "_ensure_client",
-        lambda self: SimpleNamespace(
-            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-        ),
+    # v1246: Patch OpenAI constructor for isolated client per request
+    mock_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+        close=lambda: None,
     )
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: mock_client)
     return calls, state
 
 
@@ -334,15 +333,25 @@ def test_real_sdk_sends_schema_then_reuses_it_without_a_saved_option(monkeypatch
             },
         )
 
-    with OpenAI(
+    # v1246: Patch OpenAI constructor BEFORE client creation
+    # Create mock SDK client
+    sdk_client = OpenAI(
         api_key="no-key",
         base_url="https://local.invalid/v1",
         max_retries=0,
         http_client=httpx.Client(transport=httpx.MockTransport(respond)),
-    ) as sdk_client:
-        monkeypatch.setattr(OpenAICompatibleBaseClient, "_ensure_client", lambda self: sdk_client)
-        client = RoutedLLMClient(config())
-        assert client.complete_json([], operation="analysis.style") == VALUE
-        assert client.complete_json([], operation="translation.body") == VALUE
+    )
+    
+    # Patch constructor to return mock client for all requests
+    from unittest.mock import patch
+    
+    try:
+        with patch('openai.OpenAI', return_value=sdk_client):
+            # Create client with credentials
+            client = RoutedLLMClient(config(), credentials={"local": "test-key"})
+            assert client.complete_json([], operation="analysis.style") == VALUE
+            assert client.complete_json([], operation="translation.body") == VALUE
+    finally:
+        sdk_client.close()
     assert modes(bodies) == ["json_object", "json_schema", "json_schema"]
     assert bodies[-1]["response_format"]["json_schema"]["schema"] == {"type": "object"}
