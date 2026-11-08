@@ -152,7 +152,8 @@ wenyi translate book.epub
   It can incur model usage.
 - `translate` reuses matching parsing and preparation, then translates pending
   work. Ordinary glossary extraction starts from completed source/translation
-  pairs during translation.
+  pairs during translation. Chapter digests reuse only when the LLM routing dump
+  still matches, including `base_url`; see [pipeline resume](pipeline.md).
 
 For an uncached MinerU PDF import, also set `MINERU_API_KEY` in the process
 environment. BabelDOC setup, PDF export eligibility, and other format-specific

@@ -135,6 +135,7 @@ wenyi translate book.epub
   **它既不翻译正文，也不抽取或预填术语。** 此命令可能产生模型用量。
 - `translate` 复用匹配的解析与准备结果，再处理待译内容。
   常规术语抽取从翻译过程中完成的原译文对开始。
+  章节梗概仅在 LLM 路由转储（含 `base_url`）仍匹配时复用，见[流程续跑](pipeline.md)。
 
 首次通过 MinerU 导入未缓存的 PDF，还需在进程环境中设置 `MINERU_API_KEY`。
 BabelDOC 配置、PDF 导出条件及其他格式要求见[格式参考](../reference/formats.md)。

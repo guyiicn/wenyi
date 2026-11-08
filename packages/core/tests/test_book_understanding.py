@@ -9,6 +9,7 @@ import pytest
 from wenyi_core.agents.analyzer import Analyzer
 from wenyi_core.agents.synopsis import Synopsizer
 from wenyi_core.config import Config
+from wenyi_core.llm.configuration import LLMConfig
 from wenyi_core.llm.limits import RequestCancelled, RequestStopped
 from wenyi_core.llm.providers.fake import FakeClient
 from wenyi_core.models.document import Chapter, Document, Segment
@@ -292,6 +293,44 @@ def test_synopsis_cache_tracks_the_model_configuration(tmp_path):
     runtime.config.llm = Config.from_dict({"llm": {"preset": "deepseek"}}).llm
     service.ensure_understanding(store)
     runtime.synopsizer.book_synopsis.assert_called_once()
+
+
+def _rewrite_default_provider(config, **fields):
+    raw = config.llm.model_dump(mode="json")
+    raw["providers"]["default"] = {**raw["providers"]["default"], **fields}
+    config.llm = LLMConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"base_url": "https://offline.invalid/v1"},
+        {"timeout": 12},
+        {"max_retries": 0},
+        {"api_key_env": "DUMMY_OFFLINE_KEY"},
+    ],
+)
+def test_llm_dump_changes_invalidate_saved_chapter_digests(tmp_path, fields):
+    """Digest identity includes the full LLM dump. Dummy unreachable endpoints must not reuse."""
+    service, store, runtime = _service(tmp_path)
+    service.ensure_understanding(store)
+    runtime.synopsizer.reset_mock()
+    runtime.synopsizer.digest_chapter.return_value = "Regenerated digest."
+    runtime.synopsizer.book_synopsis.return_value = "Regenerated synopsis."
+    _rewrite_default_provider(runtime.config, **fields)
+    assert service.ensure_understanding(store) == "Regenerated synopsis."
+    assert runtime.synopsizer.digest_chapter.call_count == 2
+
+
+def test_secret_values_are_not_part_of_digest_cache_identity(tmp_path, monkeypatch):
+    service, store, runtime = _service(tmp_path)
+    service.ensure_understanding(store)
+    runtime.synopsizer.reset_mock()
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "dummy-not-a-real-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-not-a-real-key")
+    assert service.ensure_understanding(store) == "Whole-book synopsis."
+    runtime.synopsizer.digest_chapter.assert_not_called()
+    runtime.synopsizer.book_synopsis.assert_not_called()
 
 
 def test_glossary_change_invalidates_synopsis_cache(tmp_path):
