@@ -171,3 +171,58 @@ def test_polish_with_corrupted_markers_preserves_clean_text():
     assert "[[I_START]]" not in result.targets[0]
     # Inline meta should be empty or warning recorded (decode will clear corrupted ranges)
     assert not result.inline_metas[0].get("ranges")
+
+
+def test_polish_render_not_polluted_across_batches():
+    """Polisher.render is restored after inline batch, doesn't affect non-inline batches."""
+    config = fake_pipeline_config(state_dir="/tmp/test")
+
+    call_count = 0
+    prompts_seen = []
+
+    def handler(messages, tier, json_mode):
+        nonlocal call_count
+        call_count += 1
+        # Record user prompts to check for pollution
+        for msg in messages:
+            if msg["role"] == "user":
+                prompts_seen.append(msg["content"])
+        return json.dumps({"polished": ["润色结果。"]})
+
+    client = FakeClient(handler=handler, config=config.llm)
+    translator = Translator(client, config)
+    polisher = Polisher(client, config)
+    executor = TranslationBatchExecutor(translator, polisher)
+
+    # Batch 1: with inline
+    def mock_translate_inline(*args, **kwargs):
+        translator.last_inline_metas = [
+            {"version": 1, "target_length": 4, "ranges": [{"start": 0, "end": 2, "tag": "i"}]}
+        ]
+        translator.last_batch_turn = [{"role": "user", "content": "test"}]
+        translator.last_batch_indices = [0]
+        return ["示例。"]
+
+    translator.translate_batch = mock_translate_inline
+    plan1 = batch_plan(["Example."])
+    result1 = executor.execute(plan1, polish=True)
+
+    inline_prompt = prompts_seen[-1]
+    assert "CRITICAL" in inline_prompt or "protected inline markers" in inline_prompt
+
+    # Batch 2: without inline
+    prompts_seen.clear()
+
+    def mock_translate_plain(*args, **kwargs):
+        translator.last_inline_metas = [{}]
+        translator.last_batch_turn = [{"role": "user", "content": "test"}]
+        translator.last_batch_indices = [0]
+        return ["普通文本。"]
+
+    translator.translate_batch = mock_translate_plain
+    plan2 = batch_plan(["Normal text."])
+    result2 = executor.execute(plan2, polish=True)
+
+    plain_prompt = prompts_seen[-1]
+    # Should NOT have inline preservation instructions
+    assert "CRITICAL" not in plain_prompt and "protected inline markers" not in plain_prompt
