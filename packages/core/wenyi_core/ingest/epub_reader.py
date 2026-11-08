@@ -50,6 +50,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
                 href,
                 book_title=book_title,
                 skip_navigation=href in toc_paths,
+                epub_zip=zf,
             )
             resources.append(
                 {
@@ -76,6 +77,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
                 len(hrefs) + auxiliary_ordinal,
                 href,
                 book_title=book_title,
+                epub_zip=zf,
             )
             auxiliary_resources.append(
                 {

@@ -151,13 +151,21 @@ def has_bold_style(element: Tag, css_rules: dict[str, dict[str, str]] | None = N
     return False
 
 
-def extract_css_rules_from_epub(soup: Any) -> dict[str, dict[str, str]]:
-    """Extract CSS rules from <style> tags in EPUB HTML.
+def extract_css_rules_from_epub(
+    soup: Any, *, epub_zip=None, resource_href: str | None = None
+) -> dict[str, dict[str, str]]:
+    """Extract CSS rules from <style> tags and <link rel="stylesheet"> in EPUB HTML.
 
-    Returns merged rules from all style blocks.
+    Returns merged rules from all style blocks and linked CSS files.
+    
+    Args:
+        soup: BeautifulSoup parsed HTML
+        epub_zip: Optional ZipFile object to read external CSS files
+        resource_href: Current XHTML resource path (for resolving relative CSS links)
     """
     merged_rules: dict[str, dict[str, str]] = {}
 
+    # Extract from inline <style> tags
     for style_tag in soup.find_all("style"):
         css_text = style_tag.get_text()
         rules = _parse_css_rules(css_text)
@@ -168,5 +176,38 @@ def extract_css_rules_from_epub(soup: Any) -> dict[str, dict[str, str]]:
                 merged_rules[selector].update(props)
             else:
                 merged_rules[selector] = props.copy()
+
+    # Extract from external <link rel="stylesheet"> files
+    if epub_zip and resource_href:
+        import os
+        
+        for link_tag in soup.find_all("link", rel="stylesheet"):
+            css_href = link_tag.get("href")
+            if not css_href:
+                continue
+            
+            # Resolve relative path
+            if css_href.startswith("/"):
+                css_path = css_href.lstrip("/")
+            else:
+                # Relative to current XHTML resource
+                resource_dir = os.path.dirname(resource_href)
+                css_path = os.path.normpath(os.path.join(resource_dir, css_href)).replace("\\", "/")
+            
+            # Read CSS file from EPUB
+            try:
+                if css_path in epub_zip.namelist():
+                    css_content = epub_zip.read(css_path).decode("utf-8", errors="ignore")
+                    rules = _parse_css_rules(css_content)
+                    
+                    # Merge rules
+                    for selector, props in rules.items():
+                        if selector in merged_rules:
+                            merged_rules[selector].update(props)
+                        else:
+                            merged_rules[selector] = props.copy()
+            except Exception:
+                # Ignore CSS file read errors
+                pass
 
     return merged_rules

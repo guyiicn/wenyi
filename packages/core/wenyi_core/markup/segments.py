@@ -426,6 +426,7 @@ def annotate_epub_resource(
     book_title: str = "",
     skip_navigation: bool = False,
     html_mode: bool = False,
+    epub_zip=None,
 ) -> tuple[str, list[Segment], str, list[dict[str, object]]]:
     """Annotate one physical XHTML and return its title, segments, backfill template, and image blocks.
 
@@ -434,13 +435,16 @@ def annotate_epub_resource(
 
     Use the physical resource index in anchors rather than the final Chapter index, so
     writers rebuild identical data-tn-id values even if logical chapter policies change.
+    
+    Args:
+        epub_zip: Optional ZipFile for reading external CSS files
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # Extract CSS rules for detecting styled spans
+    # Extract CSS rules for detecting styled spans (including external CSS files)
     from .css_emphasis import extract_css_rules_from_epub
 
-    css_rules = extract_css_rules_from_epub(soup)
+    css_rules = extract_css_rules_from_epub(soup, epub_zip=epub_zip, resource_href=href)
     segments: list[Segment] = []
     first_heading: Tag | None = None
     heading_title_parts: list[str] = []
