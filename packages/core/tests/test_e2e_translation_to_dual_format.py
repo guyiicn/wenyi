@@ -79,11 +79,15 @@ def _create_test_epub(epub_path: str) -> None:
         )
 
         # Minimal CSS
-        zf.writestr("OEBPS/styles/main.css", "body { font-family: serif; }\n.special { color: red; }")
+        zf.writestr(
+            "OEBPS/styles/main.css", "body { font-family: serif; }\n.special { color: red; }"
+        )
 
         # Image files (minimal valid PNG)
         png_header = b"\x89PNG\r\n\x1a\n"
-        png_ihdr = b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+        png_ihdr = (
+            b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+        )
         png_iend = b"\x00\x00\x00\x00IEND\xaeB`\x82"
         png_data = png_header + png_ihdr + png_iend
         zf.writestr("OEBPS/images/title.png", png_data)

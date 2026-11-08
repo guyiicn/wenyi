@@ -27,7 +27,7 @@ class ImportError(Exception):
 
 def _initialize_minimal_state(store: Storage, input_path: str, config) -> None:
     """Initialize minimal manifest for fresh projects to enable glossary import.
-    
+
     Creates a minimal valid manifest with source identity but no chapters or analysis.
     This allows importing glossary before any AI preparation or model calls.
     Subsequent prepare/translate will complete initialization normally.
@@ -37,10 +37,10 @@ def _initialize_minimal_state(store: Storage, input_path: str, config) -> None:
             f"Source file not found: {input_path}. "
             f"Ensure the file exists before importing glossary."
         )
-    
+
     # Compute source hash for identity tracking
     digest = source_sha256(input_path)
-    
+
     # Create minimal manifest with source identity
     # This is sufficient for glossary import; prepare/translate will complete initialization
     minimal_manifest = {
@@ -52,13 +52,13 @@ def _initialize_minimal_state(store: Storage, input_path: str, config) -> None:
         "chapters": [],  # Will be populated by prepare/translate
         "glossary_import_only": True,  # Marker for minimal initialization
     }
-    
+
     # Begin initialization with source identity
     store.begin_initialization(digest)
-    
+
     # Save minimal manifest
     store.save_manifest(minimal_manifest)
-    
+
     # Initialization complete - glossary can now be imported
 
 
@@ -313,17 +313,17 @@ def import_glossary(
     console: Console,
 ) -> dict[str, int]:
     """Import glossary terms from TSV; validate collisions and return outcome counts.
-    
+
     For fresh projects without manifest, creates minimal state to enable import before
     AI preparation. This allows importing frozen terminology before any model calls.
-    
+
     Dry-run mode performs pure validation without creating any directories or files.
     """
     file_hash = _compute_file_hash(file_path)
-    
+
     # Check if this is a fresh project
     is_fresh = store is None or not store.exists()
-    
+
     if is_fresh and dry_run:
         # Pure validation mode: no store creation, no filesystem writes
         console.print(
@@ -435,7 +435,7 @@ def register_import_command(app: typer.Typer, context) -> None:
 
         try:
             config = context().load_config()
-            
+
             # For dry-run on potentially fresh project, don't create store yet
             # Only create store for actual import or existing project dry-run
             store = None

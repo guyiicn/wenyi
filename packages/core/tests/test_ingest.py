@@ -1177,7 +1177,9 @@ class TestEpubIngest(unittest.TestCase):
 <p>満足に<ruby>与<rt>あずか</rt></ruby>りがちな疲れ</p>
 </body></html>"""
 
-        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "chapter.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(
+            html, 0, "chapter.xhtml"
+        )
 
         self.assertEqual(
             [segment.source for segment in segments],
@@ -1194,7 +1196,9 @@ class TestEpubIngest(unittest.TestCase):
 <dl><dt>Term</dt><dd>Definition</dd></dl>
 </body></html>"""
 
-        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "chapter.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(
+            html, 0, "chapter.xhtml"
+        )
 
         self.assertEqual(
             [segment.source for segment in segments],

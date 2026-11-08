@@ -106,7 +106,7 @@ def assemble(
         # Legacy manifest without chapter_count: derive from chapters list
         chapters_list = m.get("chapters", [])
         chapter_count = len(chapters_list) if isinstance(chapters_list, list) else 0
-    
+
     if chapter_count > 0:
         chapters = [view.load_chapter(i) for i in range(chapter_count)]
         validate_inline_preservation_for_export(chapters, allow_proportional_fallback=False)

@@ -169,7 +169,10 @@ def test_missing_target_inline_fails_assembly():
                 "epub_inline": {
                     "version": 1,
                     "source_length": 23,
-                    "nodes": [{"id": "p", "tag": "p"}, {"id": "em1", "tag": "em", "placement": "inline"}],
+                    "nodes": [
+                        {"id": "p", "tag": "p"},
+                        {"id": "em1", "tag": "em", "placement": "inline"},
+                    ],
                 }
                 # Missing target_inline!
             },
@@ -206,7 +209,11 @@ def test_missing_target_inline_fails_assembly():
 
         # Attempt assembly
         config = Config.from_dict(
-            {"language": {"source": "en", "target": "zh"}, "llm": {"preset": "fake"}, "paths": {"state_dir": os.path.dirname(state_dir)}}
+            {
+                "language": {"source": "en", "target": "zh"},
+                "llm": {"preset": "fake"},
+                "paths": {"state_dir": os.path.dirname(state_dir)},
+            }
         )
         client = FakeClient()
         orch = Orchestrator(config, client=client)

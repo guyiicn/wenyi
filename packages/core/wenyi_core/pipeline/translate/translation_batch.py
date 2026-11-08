@@ -133,9 +133,13 @@ class TranslationBatchExecutor:
                     end = r.get("end")
                     css_style = r.get("css_style")
                     if isinstance(tag, str) and isinstance(start, int) and isinstance(end, int):
-                        marker_name = {"i": "I", "em": "EM", "strong": "STRONG", "b": "B", "span": "SPAN"}.get(
-                            tag, tag.upper()
-                        )
+                        marker_name = {
+                            "i": "I",
+                            "em": "EM",
+                            "strong": "STRONG",
+                            "b": "B",
+                            "span": "SPAN",
+                        }.get(tag, tag.upper())
                         nodes.append(
                             InlineNode(
                                 tag=tag,

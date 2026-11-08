@@ -34,7 +34,7 @@ def test_broken_markers_missing_end():
     """Missing END marker from translation causes decode failure."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        
+
         # Create EPUB with emphasis
         epub_path = str(tmp / "test.epub")
         with zipfile.ZipFile(epub_path, "w") as zf:
@@ -68,7 +68,7 @@ def test_broken_markers_missing_end():
 </body>
 </html>""",
             )
-        
+
         state_dir = str(tmp / "state")
         config = Config.from_dict(
             {
@@ -78,12 +78,12 @@ def test_broken_markers_missing_end():
                 "paths": {"state_dir": state_dir},
             }
         )
-        
+
         # Handler drops END markers
         def broken_handler(messages, tier, json_mode):
             system = messages[0]["content"]
             user = messages[-1]["content"]
-            
+
             if "translator" in system.lower():
                 paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)
                 if paragraphs:
@@ -93,29 +93,29 @@ def test_broken_markers_missing_end():
                         result = text.replace("[[EM_END]]", "").replace("[[STRONG_END]]", "")
                         translations.append(result)
                     return json.dumps({"translations": translations}, ensure_ascii=False)
-            
+
             return base_routing_handler(messages, tier, json_mode)
-        
+
         client = FakeClient(handler=broken_handler)
         orch = Orchestrator(config, client=client)
-        
+
         # Translation with broken markers should set preservation_failed
         store = orch.run(epub_path)
-        
+
         # Verify preservation_failed is set
         ch = store.load_chapter(0)
-        emphasis_seg = next(
-            (s for s in ch.segments if s.source and "emphasis" in s.source), None
-        )
+        emphasis_seg = next((s for s in ch.segments if s.source and "emphasis" in s.source), None)
         assert emphasis_seg is not None
         target_inline = emphasis_seg.meta.get("target_inline", {})
-        assert target_inline.get("preservation_failed") == True, "Must mark preservation_failed when markers broken"
-        
+        assert target_inline.get("preservation_failed") == True, (
+            "Must mark preservation_failed when markers broken"
+        )
+
         # Export must fail
         md_path = str(tmp / "output.md")
         with pytest.raises(InlinePreservationError):
             orch.run_assemble(epub_path, out_path=md_path, out_format="markdown")
-        
+
         assert not Path(md_path).exists(), "Failed export must not create output file"
 
 
@@ -123,7 +123,7 @@ def test_broken_markers_mismatched_nesting():
     """Mismatched nesting (closing inner before outer) causes decode failure."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        
+
         # Create EPUB with nested emphasis
         epub_path = str(tmp / "nested.epub")
         with zipfile.ZipFile(epub_path, "w") as zf:
@@ -157,7 +157,7 @@ def test_broken_markers_mismatched_nesting():
 </body>
 </html>""",
             )
-        
+
         state_dir = str(tmp / "state")
         config = Config.from_dict(
             {
@@ -167,12 +167,12 @@ def test_broken_markers_mismatched_nesting():
                 "paths": {"state_dir": state_dir},
             }
         )
-        
+
         # Handler returns mismatched nesting
         def mismatched_handler(messages, tier, json_mode):
             system = messages[0]["content"]
             user = messages[-1]["content"]
-            
+
             if "translator" in system.lower():
                 paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)
                 if paragraphs:
@@ -185,29 +185,30 @@ def test_broken_markers_mismatched_nesting():
                             result = f"中文{idx}"
                         translations.append(result)
                     return json.dumps({"translations": translations}, ensure_ascii=False)
-            
+
             return base_routing_handler(messages, tier, json_mode)
-        
+
         client = FakeClient(handler=mismatched_handler)
         orch = Orchestrator(config, client=client)
-        
+
         # Should complete with preservation_failed
         store = orch.run(epub_path)
-        
+
         ch = store.load_chapter(0)
-        nested_seg = next(
-            (s for s in ch.segments if s.source and "nested" in s.source), None
-        )
+        nested_seg = next((s for s in ch.segments if s.source and "nested" in s.source), None)
         assert nested_seg is not None
         target_inline = nested_seg.meta.get("target_inline", {})
-        assert target_inline.get("preservation_failed") == True or len(target_inline.get("validation_warnings", [])) > 0
+        assert (
+            target_inline.get("preservation_failed") == True
+            or len(target_inline.get("validation_warnings", [])) > 0
+        )
 
 
 def test_polish_removes_markers():
     """Polish removing markers causes preservation_failed and export rejection."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        
+
         epub_path = str(tmp / "test.epub")
         with zipfile.ZipFile(epub_path, "w") as zf:
             zf.writestr("mimetype", "application/epub+zip")
@@ -240,7 +241,7 @@ def test_polish_removes_markers():
 </body>
 </html>""",
             )
-        
+
         state_dir = str(tmp / "state")
         config = Config.from_dict(
             {
@@ -250,12 +251,12 @@ def test_polish_removes_markers():
                 "paths": {"state_dir": state_dir},
             }
         )
-        
+
         # Translation preserves markers, but polish strips them
         def polish_breaks_handler(messages, tier, json_mode):
             system = messages[0]["content"]
             user = messages[-1]["content"]
-            
+
             if "translator" in system.lower():
                 # Translation: preserve markers
                 paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)
@@ -272,7 +273,7 @@ def test_polish_removes_markers():
                                 result.append(f"中文{idx}")
                         translations.append("".join(result))
                     return json.dumps({"translations": translations}, ensure_ascii=False)
-            
+
             elif "Polish" in user or "polish" in system.lower():
                 # Polish: strip all markers
                 for msg in reversed(messages[:-1]):
@@ -287,29 +288,29 @@ def test_polish_removes_markers():
                                 return json.dumps({"polished": polished}, ensure_ascii=False)
                         except Exception:
                             pass
-            
+
             return base_routing_handler(messages, tier, json_mode)
-        
+
         client = FakeClient(handler=polish_breaks_handler)
         orch = Orchestrator(config, client=client)
-        
+
         # Should complete but mark preservation_failed
         store = orch.run(epub_path)
-        
+
         # Verify preservation_failed is set
         ch = store.load_chapter(0)
-        emphasis_seg = next(
-            (s for s in ch.segments if s.source and "emphasis" in s.source), None
-        )
+        emphasis_seg = next((s for s in ch.segments if s.source and "emphasis" in s.source), None)
         assert emphasis_seg is not None
         target_inline = emphasis_seg.meta.get("target_inline", {})
-        assert target_inline.get("preservation_failed") == True, "Polish removing markers must set preservation_failed"
-        
+        assert target_inline.get("preservation_failed") == True, (
+            "Polish removing markers must set preservation_failed"
+        )
+
         # Export must fail
         md_path = str(tmp / "output.md")
         with pytest.raises(InlinePreservationError):
             orch.run_assemble(epub_path, out_path=md_path, out_format="markdown")
-        
+
         assert not Path(md_path).exists(), "Failed export must not create output file"
 
 
@@ -317,7 +318,7 @@ def test_legacy_state_missing_target_inline():
     """Legacy state without target_inline rejects export fail-closed."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        
+
         # Create EPUB with emphasis
         epub_path = str(tmp / "test.epub")
         with zipfile.ZipFile(epub_path, "w") as zf:
@@ -351,7 +352,7 @@ def test_legacy_state_missing_target_inline():
 </body>
 </html>""",
             )
-        
+
         state_dir = str(tmp / "state")
         config = Config.from_dict(
             {
@@ -361,13 +362,13 @@ def test_legacy_state_missing_target_inline():
                 "paths": {"state_dir": state_dir},
             }
         )
-        
+
         client = FakeClient(handler=base_routing_handler)
         orch = Orchestrator(config, client=client)
-        
+
         # First, run normal translation to create valid state
         store = orch.run(epub_path)
-        
+
         # Now simulate legacy state: remove target_inline from segment with emphasis
         ch = store.load_chapter(0)
         for seg in ch.segments:
@@ -375,15 +376,15 @@ def test_legacy_state_missing_target_inline():
                 # Remove target_inline to simulate legacy state
                 if "target_inline" in seg.meta:
                     del seg.meta["target_inline"]
-        
+
         store.save_chapter(ch)
-        
+
         # Attempt export - must fail due to missing target_inline
         epub_out = str(tmp / "bad.epub")
-        
+
         with pytest.raises(InlinePreservationError):
             orch.run_assemble(epub_path, out_path=epub_out, out_format="epub")
-        
+
         # Verify no output file
         assert not Path(epub_out).exists(), "Legacy state export must not create output"
 

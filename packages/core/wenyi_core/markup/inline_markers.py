@@ -138,8 +138,8 @@ def encode_inline_markers(
     events: list[tuple[int, int, InlineNode]] = []
     for node in inline_nodes:
         events.append((node.start, 0, node))  # START event
-        events.append((node.end, 1, node))    # END event
-    
+        events.append((node.end, 1, node))  # END event
+
     # Sort events: by position, then START before END at same position,
     # but for END events at same position, inner nodes (started later) close first
     def event_key(event):
@@ -147,10 +147,10 @@ def encode_inline_markers(
         if event_type == 0:  # START
             return (pos, 0, node.start)  # Earlier starts first
         else:  # END
-            return (pos, 1, -node.start)   # Later starts close first (inner closes before outer)
-    
+            return (pos, 1, -node.start)  # Later starts close first (inner closes before outer)
+
     events.sort(key=event_key)
-    
+
     # Insert markers from back to front to avoid position shifts
     encoded = text
     offset = 0

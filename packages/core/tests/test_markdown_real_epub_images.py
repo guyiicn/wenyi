@@ -98,7 +98,10 @@ def _create_real_epub(epub_path: str) -> None:
 
         # Image files (minimal valid PNG)
         png_header = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
-        png_data = png_header + b"\x00\x00\x00\x0cIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+        png_data = (
+            png_header
+            + b"\x00\x00\x00\x0cIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
 
         zf.writestr("OEBPS/images/cover.png", png_data)
         zf.writestr("OEBPS/images/diagram.png", png_data)
@@ -379,7 +382,12 @@ def test_missing_epub_images_fail_explicitly():
             seg.target = f"文字_{seg.index}"
 
         translated_chapter = Chapter(
-            index=ch.index, title="章节", segments=ch.segments, href=ch.href, template=ch.template, meta=ch.meta
+            index=ch.index,
+            title="章节",
+            segments=ch.segments,
+            href=ch.href,
+            template=ch.template,
+            meta=ch.meta,
         )
 
         store = FileStorage(str(tmp / "book"))
@@ -404,7 +412,11 @@ def test_missing_epub_images_fail_explicitly():
 
         error_msg = str(exc_info.value)
         # Should mention the image path or indicate missing resource
-        assert "missing" in error_msg.lower() or "not found" in error_msg.lower() or "images" in error_msg.lower()
+        assert (
+            "missing" in error_msg.lower()
+            or "not found" in error_msg.lower()
+            or "images" in error_msg.lower()
+        )
 
         # Output file should NOT exist (transaction failed)
         assert not Path(out_md).exists(), "Failed assembly should not create partial output"

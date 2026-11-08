@@ -87,13 +87,13 @@ def _extract_segment_images_from_epub(
                         for node in raw_nodes:
                             if isinstance(node, dict) and node.get("tag") == "img":
                                 img_nodes.append(node)
-                        
+
                         if not img_nodes:
                             continue
-                        
+
                         # Find all img tags in HTML (in document order)
                         all_imgs = soup.find_all("img")
-                        
+
                         # Match by trying annotated id first, then fall back to positional matching
                         key = (ch.index, seg.index)
                         for img_node in img_nodes:
@@ -101,19 +101,22 @@ def _extract_segment_images_from_epub(
                             if not isinstance(inline_id, str):
                                 continue
                             placement = img_node.get("placement", "after")
-                            
+
                             # Try to find by annotated id attribute
                             img = soup.find("img", attrs={INLINE_ID_ATTR: inline_id})
-                            
+
                             # If not found (original EPUB without annotation), use positional matching
                             # by extracting all imgs and matching count
                             if not img and all_imgs:
                                 # Count how many img nodes we've seen so far in metadata
-                                img_index = sum(1 for n in raw_nodes[:raw_nodes.index(img_node)] 
-                                              if isinstance(n, dict) and n.get("tag") == "img")
+                                img_index = sum(
+                                    1
+                                    for n in raw_nodes[: raw_nodes.index(img_node)]
+                                    if isinstance(n, dict) and n.get("tag") == "img"
+                                )
                                 if img_index < len(all_imgs):
                                     img = all_imgs[img_index]
-                            
+
                             if img:
                                 src = img.get("src", "")
                                 alt = img.get("alt", "")
@@ -249,7 +252,7 @@ def _assemble_plain_text(
             for images_list in segment_images.values():
                 for _inline_id, norm_src, _alt, _placement in images_list:
                     required_images.add(norm_src)
-            
+
             # Also collect from standalone image blocks in chapter metadata
             for ch in chapters:
                 raw_image_blocks = ch.meta.get("image_blocks")
@@ -265,9 +268,11 @@ def _assemble_plain_text(
                                             # Use first segment's resource_href for normalization
                                             first_href = ch.segments[0].resource_href
                                             if first_href:
-                                                normalized_src = _normalize_epub_href(first_href, src)
+                                                normalized_src = _normalize_epub_href(
+                                                    first_href, src
+                                                )
                                                 required_images.add(normalized_src)
-            
+
             # Scan all HTML resources for any referenced images (fail-closed validation)
             epub_resources = meta.get("epub_resources")
             if isinstance(epub_resources, list):
@@ -283,10 +288,14 @@ def _assemble_plain_text(
                             # Check media type if present, otherwise assume HTML/XHTML based on extension
                             is_html = False
                             if media_type:
-                                is_html = "xhtml" in media_type.lower() or "html" in media_type.lower()
+                                is_html = (
+                                    "xhtml" in media_type.lower() or "html" in media_type.lower()
+                                )
                             else:
                                 lower_href = href.lower()
-                                is_html = lower_href.endswith(".xhtml") or lower_href.endswith(".html")
+                                is_html = lower_href.endswith(".xhtml") or lower_href.endswith(
+                                    ".html"
+                                )
                             if not is_html:
                                 continue
                             if href not in zf.namelist():

@@ -340,8 +340,9 @@ def test_markdown_missing_image_files():
 
         # Ingest EPUB
         from wenyi_core.ingest.epub_reader import read_epub
+
         doc = read_epub(epub_path, source_lang="en", target_lang="zh")
-        
+
         # Translate segments
         for seg in doc.chapters[0].segments:
             seg.target = "文字。"
@@ -365,7 +366,7 @@ def test_markdown_missing_image_files():
         out_md = str(tmp / "output.md")
         with pytest.raises(FileNotFoundError) as exc_info:
             assemble(store, epub_path, out_path=out_md, out_format="markdown")
-        
+
         error_msg = str(exc_info.value)
         assert "missing.png" in error_msg
         assert "Required image files missing" in error_msg

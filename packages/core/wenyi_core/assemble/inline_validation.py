@@ -43,8 +43,7 @@ def validate_inline_preservation_for_export(
             semantic_count = sum(
                 1
                 for node in nodes
-                if isinstance(node, dict)
-                and node.get("tag") in ("i", "em", "strong", "b", "span")
+                if isinstance(node, dict) and node.get("tag") in ("i", "em", "strong", "b", "span")
             )
 
             if semantic_count == 0:
@@ -74,7 +73,9 @@ def validate_inline_preservation_for_export(
                 continue
 
             # Check for explicit preservation failure flag
-            if raw_target_inline.get("preservation_failed") or raw_target_inline.get("decode_failed"):
+            if raw_target_inline.get("preservation_failed") or raw_target_inline.get(
+                "decode_failed"
+            ):
                 issues.append(
                     f"Chapter {chapter.index}, Segment {segment.index}: "
                     f"Inline marker preservation failed during translation/polish. "

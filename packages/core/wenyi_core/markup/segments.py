@@ -29,17 +29,19 @@ from wenyi_core.markup.ruby import RUBY_MARK_LEFT, RUBY_MARK_RIGHT
 from wenyi_core.models.document import KIND_HEADING, KIND_TEXT, Segment
 
 
-def _preserved_inline_roots(block: Tag, css_rules: dict[str, dict[str, str]] | None = None) -> list[Tag]:
+def _preserved_inline_roots(
+    block: Tag, css_rules: dict[str, dict[str, str]] | None = None
+) -> list[Tag]:
     """Return nontext nodes for unchanged backfill, preserving text-free wrappers where
     possible.
-    
+
     Args:
         block: Block element to scan for inline nodes
         css_rules: Optional CSS rules for detecting styled spans
     """
     # Emphasis tags that need inline marker encoding/decoding during translation
     _EMPHASIS_TAGS = {"i", "em", "strong", "b"}
-    
+
     roots: list[Tag] = []
     seen: set[int] = set()
     for candidate in block.find_all(True):
@@ -50,24 +52,32 @@ def _preserved_inline_roots(block: Tag, css_rules: dict[str, dict[str, str]] | N
             continue
         is_atomic = candidate.name in _ATOMIC_INLINE_TAGS
         is_emphasis = candidate.name in _EMPHASIS_TAGS and candidate.get_text(strip=True)
-        
+
         # Check for CSS-styled spans with italic or bold
         is_css_emphasis = False
         if candidate.name == "span" and candidate.get_text(strip=True) and css_rules is not None:
             from .css_emphasis import has_italic_style, has_bold_style
-            is_css_emphasis = has_italic_style(candidate, css_rules) or has_bold_style(candidate, css_rules)
-        
+
+            is_css_emphasis = has_italic_style(candidate, css_rules) or has_bold_style(
+                candidate, css_rules
+            )
+
         is_empty_anchor = (
             candidate.name in {"a", "span"}
             and not candidate.get_text(strip=True)
             and (candidate.has_attr("id") or candidate.has_attr("name"))
         )
         # Preserve structural spans with id/class even if no text emphasis
-        is_structural_span = (
-            candidate.name == "span"
-            and (candidate.has_attr("id") or candidate.has_attr("class"))
+        is_structural_span = candidate.name == "span" and (
+            candidate.has_attr("id") or candidate.has_attr("class")
         )
-        if not is_atomic and not is_emphasis and not is_css_emphasis and not is_empty_anchor and not is_structural_span:
+        if (
+            not is_atomic
+            and not is_emphasis
+            and not is_css_emphasis
+            and not is_empty_anchor
+            and not is_structural_span
+        ):
             continue
 
         root = candidate
@@ -243,16 +253,17 @@ def _segment_content(
         node_text_length = len(node.get_text())
         placement = "before" if offset == 0 else "after" if offset == source_length else "inline"
         node[INLINE_ID_ATTR] = inline_id
-        
+
         # Determine CSS style for spans
         css_style = None
         if node.name == "span" and css_rules:
             from .css_emphasis import has_italic_style, has_bold_style
+
             if has_italic_style(node, css_rules):
                 css_style = "italic"
             elif has_bold_style(node, css_rules):
                 css_style = "bold"
-        
+
         node_dict = {
             "id": inline_id,
             "tag": node.name,
@@ -425,9 +436,10 @@ def annotate_epub_resource(
     writers rebuild identical data-tn-id values even if logical chapter policies change.
     """
     soup = BeautifulSoup(html, "html.parser")
-    
+
     # Extract CSS rules for detecting styled spans
     from .css_emphasis import extract_css_rules_from_epub
+
     css_rules = extract_css_rules_from_epub(soup)
     segments: list[Segment] = []
     first_heading: Tag | None = None

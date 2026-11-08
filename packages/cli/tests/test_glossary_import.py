@@ -27,7 +27,10 @@ class TestGlossaryImport(unittest.TestCase):
     def _init_store(self) -> FileStorage:
         """Initialize a minimal translation state."""
         Config.from_dict(
-            {"language": {"source": "en", "target": "zh"}, "paths": {"state_dir": str(self.state_dir)}}
+            {
+                "language": {"source": "en", "target": "zh"},
+                "paths": {"state_dir": str(self.state_dir)},
+            }
         )
         run_dir = self.state_dir / "test-novel" / "targets" / "zh"
         run_dir.mkdir(parents=True)
@@ -56,10 +59,7 @@ class TestGlossaryImport(unittest.TestCase):
         store = self._init_store()
         tsv = self._write_tsv(
             "terms.tsv",
-            "english\tpreferred_zh_cn\n"
-            "Force\t原力\n"
-            "Jedi\t绝地\n"
-            "lightsaber\t光剑\n",
+            "english\tpreferred_zh_cn\nForce\t原力\nJedi\t绝地\nlightsaber\t光剑\n",
         )
 
         results = import_glossary(
@@ -224,7 +224,7 @@ class TestGlossaryImport(unittest.TestCase):
         store = self._init_store()
         tsv = self._write_tsv(
             "terms.tsv",
-            "english\tpreferred_zh_cn\n" "Jedi\t绝地\n" "Jedi\t绝地武士\n",
+            "english\tpreferred_zh_cn\nJedi\t绝地\nJedi\t绝地武士\n",
         )
 
         from wenyi_cli.commands.glossary_import import ImportError

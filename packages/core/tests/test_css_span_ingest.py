@@ -15,18 +15,16 @@ def test_css_italic_span_preserved():
     <p>Text with <span class="italic">CSS italic text</span> here.</p>
 </body>
 </html>"""
-    
-    title, segments, template, image_blocks = annotate_epub_resource(
-        html, 0, "test.xhtml"
-    )
-    
+
+    title, segments, template, image_blocks = annotate_epub_resource(html, 0, "test.xhtml")
+
     assert len(segments) == 1
     seg = segments[0]
     assert "CSS italic text" in seg.source
-    
+
     inline = seg.meta.get("epub_inline")
     assert inline is not None, "epub_inline metadata must exist"
-    
+
     nodes = inline.get("nodes", [])
     assert len(nodes) == 1, f"Expected 1 inline node (CSS span), got {len(nodes)}"
     assert nodes[0]["tag"] == "span"
@@ -44,11 +42,9 @@ def test_css_bold_span_preserved():
     <p>Text with <span class="bold">CSS bold text</span> here.</p>
 </body>
 </html>"""
-    
-    title, segments, template, image_blocks = annotate_epub_resource(
-        html, 0, "test.xhtml"
-    )
-    
+
+    title, segments, template, image_blocks = annotate_epub_resource(html, 0, "test.xhtml")
+
     seg = segments[0]
     inline = seg.meta.get("epub_inline")
     nodes = inline.get("nodes", [])
@@ -64,11 +60,9 @@ def test_plain_span_not_emphasis():
     <p>Text with <span class="note">plain span</span> here.</p>
 </body>
 </html>"""
-    
-    title, segments, template, image_blocks = annotate_epub_resource(
-        html, 0, "test.xhtml"
-    )
-    
+
+    title, segments, template, image_blocks = annotate_epub_resource(html, 0, "test.xhtml")
+
     seg = segments[0]
     inline = seg.meta.get("epub_inline")
     nodes = inline.get("nodes", [])
@@ -85,11 +79,9 @@ def test_span_with_id_preserved():
     <p>Text with <span id="ref-1">span with id</span> here.</p>
 </body>
 </html>"""
-    
-    title, segments, template, image_blocks = annotate_epub_resource(
-        html, 0, "test.xhtml"
-    )
-    
+
+    title, segments, template, image_blocks = annotate_epub_resource(html, 0, "test.xhtml")
+
     seg = segments[0]
     inline = seg.meta.get("epub_inline")
     nodes = inline.get("nodes", [])

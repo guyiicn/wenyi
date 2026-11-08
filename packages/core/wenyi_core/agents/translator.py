@@ -111,30 +111,33 @@ class Translator(Agent):
             src=self.src,
             tgt=self.tgt,
         )
-        user = self.render(
-            "translator_user",
-            src=self.src,
-            tgt=self.tgt,
-            style=style or "(none)",
-            book_synopsis=book_synopsis or "(none)",
-            glossary=prompts.render_glossary(
-                glossary_terms,
-                source_lang=self.src,
-                genre=self.language_policy.context.genre,
-                note_source="\n".join(sources)
-                if self.config.pipeline.terminology_context
-                else None,
-            ),
-            annotation_contexts=prompts.render_annotation_contexts(
-                annotation_contexts or [[] for _ in sources]
-            ),
-            chapter_digest=chapter_digest or "(none)",
-            context=context or "(none)",
-            n=n,
-            n_minus_1=n - 1,
-            numbered_source=prompts.numbered(sources),
-            next_source=prompts.render_source_reference(next_source),
-        ) + inline_suffix
+        user = (
+            self.render(
+                "translator_user",
+                src=self.src,
+                tgt=self.tgt,
+                style=style or "(none)",
+                book_synopsis=book_synopsis or "(none)",
+                glossary=prompts.render_glossary(
+                    glossary_terms,
+                    source_lang=self.src,
+                    genre=self.language_policy.context.genre,
+                    note_source="\n".join(sources)
+                    if self.config.pipeline.terminology_context
+                    else None,
+                ),
+                annotation_contexts=prompts.render_annotation_contexts(
+                    annotation_contexts or [[] for _ in sources]
+                ),
+                chapter_digest=chapter_digest or "(none)",
+                context=context or "(none)",
+                n=n,
+                n_minus_1=n - 1,
+                numbered_source=prompts.numbered(sources),
+                next_source=prompts.render_source_reference(next_source),
+            )
+            + inline_suffix
+        )
         messages: Messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

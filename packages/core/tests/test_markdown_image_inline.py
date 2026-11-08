@@ -91,7 +91,9 @@ class TestImageExtraction:
         epub_path = self._create_test_epub(tmp_path)
         assets_dir = tmp_path / "assets"
 
-        image_map = _extract_images_from_epub(str(epub_path), str(assets_dir))
+        # Require all images
+        required_images = {"img1.jpg", "img2.png"}
+        image_map = _extract_images_from_epub(str(epub_path), str(assets_dir), required_images)
 
         assert len(image_map) == 2
         assert "OEBPS/images/cover.jpg" in image_map
@@ -105,7 +107,7 @@ class TestImageExtraction:
 
     def test_nonexistent_epub(self, tmp_path):
         """Test handling of nonexistent EPUB."""
-        image_map = _extract_images_from_epub("/nonexistent.epub", str(tmp_path / "assets"))
+        image_map = _extract_images_from_epub("/nonexistent.epub", str(tmp_path / "assets"), set())
         assert image_map == {}
 
     def test_duplicate_image_names(self, tmp_path):
@@ -118,7 +120,8 @@ class TestImageExtraction:
             zf.writestr("other/img.jpg", b"data2")
 
         assets_dir = tmp_path / "assets"
-        image_map = _extract_images_from_epub(str(epub_path), str(assets_dir))
+        required_images = {"images/img.jpg", "other/img.jpg"}
+        image_map = _extract_images_from_epub(str(epub_path), str(assets_dir), required_images)
 
         assert len(image_map) == 2
         assert len(set(image_map.values())) == 2  # Both mapped to different names

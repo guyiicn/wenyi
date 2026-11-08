@@ -44,11 +44,7 @@ def prepare_sources_with_inline(
         nodes = raw_inline.get("nodes")
         source_length = raw_inline.get("source_length")
 
-        if (
-            not isinstance(nodes, list)
-            or not nodes
-            or not isinstance(source_length, int)
-        ):
+        if not isinstance(nodes, list) or not nodes or not isinstance(source_length, int):
             encoded_sources.append(source)
             inline_nodes_per_segment.append(None)
             continue
@@ -89,9 +85,7 @@ def decode_targets_with_inline(
     target_inline_metas: list[dict[str, object]] = []
     all_warnings: list[str] = []
 
-    for idx, (target, original_nodes) in enumerate(
-        zip(targets, original_nodes_per_segment)
-    ):
+    for idx, (target, original_nodes) in enumerate(zip(targets, original_nodes_per_segment)):
         if original_nodes is None:
             # No inline markup expected
             clean_targets.append(target)
@@ -116,7 +110,7 @@ def decode_targets_with_inline(
                     if original_node.css_style:
                         range_dict["css_style"] = original_node.css_style
                 range_list.append(range_dict)
-            
+
             target_inline_meta = {
                 "version": 1,
                 "target_length": len(clean_text),
@@ -191,8 +185,7 @@ def validate_inline_preservation_result(
         return True, "no_warnings"
 
     critical_warnings = [
-        w for w in warnings
-        if "Unclosed" in w or "Unmatched" in w or "Mismatched" in w
+        w for w in warnings if "Unclosed" in w or "Unmatched" in w or "Mismatched" in w
     ]
 
     count_warnings = [w for w in warnings if "count mismatch" in w.lower()]

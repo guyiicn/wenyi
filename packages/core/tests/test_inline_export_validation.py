@@ -173,7 +173,7 @@ def test_export_succeeds_with_no_source_inline():
             "target_lang": "zh",
             "chapter_count": 1,
             "source_sha256": "abc123",
-        "chapters": [{"index": 0, "title": "", "status": "done"}],
+            "chapters": [{"index": 0, "title": "", "status": "done"}],
         }
         store.save_manifest(manifest)
 
@@ -197,7 +197,9 @@ def test_export_multiple_formats_fail_closed():
 
             error_msg = str(exc_info.value)
             assert "preservation failed" in error_msg or "markers were lost" in error_msg
-            assert not Path(out_path).exists(), f"Format {fmt} created file despite validation error"
+            assert not Path(out_path).exists(), (
+                f"Format {fmt} created file despite validation error"
+            )
 
 
 def test_mixed_segments_identifies_failures():
@@ -263,7 +265,7 @@ def test_mixed_segments_identifies_failures():
             "target_lang": "zh",
             "chapter_count": 1,
             "source_sha256": "abc123",
-        "chapters": [{"index": 0, "title": "", "status": "done"}],
+            "chapters": [{"index": 0, "title": "", "status": "done"}],
         }
         store.save_manifest(manifest)
 

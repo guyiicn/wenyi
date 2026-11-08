@@ -50,7 +50,10 @@ class TestGlossaryImportPrompts(unittest.TestCase):
             captured_prompts.append(messages)
             if "literary translator" in messages[0]["content"]:
                 return '{"translations": ["原力很强。绝地必将获胜。"]}'
-            if "title" in messages[0]["content"].lower() or "title" in messages[-1]["content"].lower():
+            if (
+                "title" in messages[0]["content"].lower()
+                or "title" in messages[-1]["content"].lower()
+            ):
                 return '{"titles": ["小说"]}'
             return '{"language": "en"}'
 
@@ -125,7 +128,10 @@ class TestGlossaryImportPrompts(unittest.TestCase):
                 return '{"translations": ["原力很强。绝地必将获胜。"]}'
             if "translation reviewer" in messages[0]["content"]:
                 return '{"issues": []}'
-            if "title" in messages[0]["content"].lower() or "title" in messages[-1]["content"].lower():
+            if (
+                "title" in messages[0]["content"].lower()
+                or "title" in messages[-1]["content"].lower()
+            ):
                 return '{"titles": ["小说"]}'
             return '{"language": "en"}'
 
@@ -192,7 +198,10 @@ class TestGlossaryImportPrompts(unittest.TestCase):
                         end = user.find("\n\n", start) if "\n\n" in user[start:] else len(user)
                         captured_sources.append(user[start:end])
                     return '{"translations": ["第一章关于绝地的文字。"]}'
-                if "title" in messages[0]["content"].lower() or "title" in messages[-1]["content"].lower():
+                if (
+                    "title" in messages[0]["content"].lower()
+                    or "title" in messages[-1]["content"].lower()
+                ):
                     return '{"titles": ["小说"]}'
                 return '{"language": "en"}'
 

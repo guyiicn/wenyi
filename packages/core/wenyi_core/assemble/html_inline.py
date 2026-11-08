@@ -415,7 +415,7 @@ def _replace_block_content(
         # Atomic tags (img, video) keep their original content
         _EMPHASIS_TAGS = {"i", "em", "strong", "b"}
         is_emphasis = isinstance(tag, str) and tag in _EMPHASIS_TAGS
-        
+
         # Use verified position if available
         target_offset = None
         has_verified_position = False
@@ -436,7 +436,7 @@ def _replace_block_content(
                 should_clear_span = True
             elif node.has_attr("id") or node.has_attr("class"):
                 is_structural_span = True
-        
+
         if is_emphasis:
             node.clear()
         elif should_clear_span:
@@ -478,17 +478,23 @@ def _replace_block_content(
                 # Find the corresponding node
                 matched = False
                 for target_offset, order, node in restored:
-                    if node.name == tag and abs(target_offset - start) < 3:  # tolerance for rounding
+                    if (
+                        node.name == tag and abs(target_offset - start) < 3
+                    ):  # tolerance for rounding
                         # Create a range entry
                         # Note: node was already cleared, will be filled by render_ranges
                         emphasis_ranges.append((start, end, order, node, []))
                         matched = True
                         break
-    
+
     # Remove emphasis tags from restored if they're in emphasis_ranges
     if emphasis_ranges:
         emphasis_nodes = {id(node) for _, _, _, node, _ in emphasis_ranges}
-        restored = [(offset, order, node) for offset, order, node in restored if id(node) not in emphasis_nodes]
+        restored = [
+            (offset, order, node)
+            for offset, order, node in restored
+            if id(node) not in emphasis_nodes
+        ]
 
     # Extract ordinary inline nodes first: range links may contain images, which become inaccessible
     # after the link root has been extracted and cleared.
