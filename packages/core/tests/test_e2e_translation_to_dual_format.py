@@ -129,7 +129,7 @@ def _translation_handler(messages, tier, json_mode):
     if "literary translator" in system.lower() or "translator" in system.lower():
         # Check if this is polish request
         if "polish" in user.lower() or "polish" in system.lower():
-            # Polish: change order and length again
+            # Polish: change text but preserve inline markers
             for msg in reversed(messages[:-1]):
                 if msg.get("role") == "assistant":
                     try:
@@ -137,38 +137,80 @@ def _translation_handler(messages, tier, json_mode):
                         translations = prev.get("translations", [])
                         if translations:
                             polished = []
+                            marker_pattern = r"(\[\[[A-Z_0-9]+_(?:START|END)\]\])"
                             for t in translations:
-                                # Significantly rearrange and change length
-                                polished.append(t.replace("译文", "润色后译文"))
+                                # Preserve markers while changing text
+                                parts = re.split(marker_pattern, t)
+                                result = []
+                                for part in parts:
+                                    if re.match(marker_pattern, part):
+                                        # Keep marker as-is
+                                        result.append(part)
+                                    elif part.strip():
+                                        # Change text but preserve markers
+                                        result.append(part.replace("译文", "润色后译文"))
+                                    else:
+                                        result.append(part)
+                                polished.append("".join(result))
                             return json.dumps({"polished": polished}, ensure_ascii=False)
                     except (json.JSONDecodeError, KeyError):
                         pass
             return json.dumps({"polished": []}, ensure_ascii=False)
 
-        # Count source paragraphs
-        paragraphs = re.findall(r"^\[(\d+)\]", user, re.MULTILINE)
-        n = len(paragraphs)
-
-        # Return translations with different length and order
-        translations = [
-            "第一段译文强调文字在此。",  # para1: "simple emphasis" → 强调文字
-            "第二段译文嵌套强调在里面的加粗文字。",  # para2: nested emphasis
-            "第三段译文有特殊类别文本和中段多层标记在这。",  # para3: class span, mid-sentence marks
-            "第四段译文链接到第一段锚点。",  # para4: links
-        ]
-        return json.dumps({"translations": translations[:n]}, ensure_ascii=False)
+        # Extract numbered paragraphs and preserve inline markers
+        paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)
+        if not paragraphs:
+            # Fallback
+            n = len(re.findall(r"^\[(\d+)\]", user, re.MULTILINE))
+            return json.dumps({"translations": ["译文"] * n}, ensure_ascii=False)
+        
+        # Return translations preserving inline markers exactly
+        translations = []
+        marker_pattern = r"(\[\[[A-Z_0-9]+_(?:START|END)\]\])"
+        
+        for i, (idx, source_text) in enumerate(paragraphs):
+            # Split by markers
+            parts = re.split(marker_pattern, source_text)
+            
+            result = []
+            for part in parts:
+                if re.match(marker_pattern, part):
+                    # Keep marker as-is
+                    result.append(part)
+                elif part.strip():
+                    # Translate text part, keep markers separate
+                    result.append(f"译{i}")
+                else:
+                    result.append(part)
+            
+            translations.append("".join(result))
+        
+        return json.dumps({"translations": translations}, ensure_ascii=False)
 
     # Prose editor / polish
     if "prose editor" in system.lower():
-        paragraphs = re.findall(r"^\[(\d+)\]", user, re.MULTILINE)
-        n = len(paragraphs)
-        polished = [
-            "第一段润色后译文强调在此处。",
-            "第二段润色后译文里面嵌套的强调加粗。",
-            "第三段润色后译文特殊类别和多层中段标记。",
-            "第四段润色后译文链接第一段。",
-        ]
-        return json.dumps({"polished": polished[:n]}, ensure_ascii=False)
+        # Extract numbered paragraphs and preserve inline markers
+        paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)
+        if not paragraphs:
+            n = len(re.findall(r"^\[(\d+)\]", user, re.MULTILINE))
+            return json.dumps({"polished": ["润文"] * n}, ensure_ascii=False)
+        
+        polished = []
+        marker_pattern = r"(\[\[[A-Z_0-9]+_(?:START|END)\]\])"
+        for idx, text in paragraphs:
+            # Preserve markers while polishing
+            parts = re.split(marker_pattern, text)
+            result = []
+            for part in parts:
+                if re.match(marker_pattern, part):
+                    result.append(part)
+                elif part.strip():
+                    result.append(part.replace("译文", "润色后译文"))
+                else:
+                    result.append(part)
+            polished.append("".join(result))
+        
+        return json.dumps({"polished": polished}, ensure_ascii=False)
 
     # Review
     if "reviewer" in system.lower():

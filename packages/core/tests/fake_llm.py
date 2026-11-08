@@ -40,7 +40,8 @@ def routing_handler(messages, tier, json_mode):
     if "literary translator" in system or "academic translator" in system:
         # Polish may append a user turn to the same translation conversation.
         if "Polish the translations from your previous JSON response" in user:
-            n = None
+            # Extract previous translations and preserve inline markers
+            prev_translations = []
             for message in reversed(messages[:-1]):
                 if message.get("role") == "assistant":
                     try:
@@ -49,12 +50,35 @@ def routing_handler(messages, tier, json_mode):
                         payload = {}
                     translations = payload.get("translations")
                     if isinstance(translations, list):
-                        n = len(translations)
-                    break
-            if n is None:
+                        prev_translations = translations
+                        break
+            
+            if not prev_translations:
                 match = re.search(r"exactly (\d+) items", user)
                 n = int(match.group(1)) if match else 0
-            return json.dumps({"polished": [f"润{i}" for i in range(n)]}, ensure_ascii=False)
+                return json.dumps({"polished": [f"润{i}" for i in range(n)]}, ensure_ascii=False)
+            
+            # Preserve inline markers while polishing
+            polished = []
+            for i, trans in enumerate(prev_translations):
+                # Extract markers
+                marker_pattern = r"(\[\[[A-Z_0-9]+_(?:START|END)\]\])"
+                parts = re.split(marker_pattern, trans)
+                
+                result = []
+                for part in parts:
+                    if re.match(marker_pattern, part):
+                        # Keep marker as-is
+                        result.append(part)
+                    elif part.strip():
+                        # Polish: add prefix but keep structure
+                        result.append(f"润{i}")
+                    else:
+                        result.append(part)
+                
+                polished.append("".join(result))
+            
+            return json.dumps({"polished": polished}, ensure_ascii=False)
         
         # Preserve inline markers while translating
         paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)

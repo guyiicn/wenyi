@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from wenyi_core.assemble.inline_validation import InlinePreservationError
 from wenyi_core.config import Config
 from wenyi_core.llm.providers.fake import FakeClient
 from wenyi_core.models.document import Chapter, Segment
@@ -104,20 +105,23 @@ def test_e2e_simple_translation_state_and_export():
         assert manifest["fmt"] == "epub"
         assert len(manifest["chapters"]) == 1
 
-        # Reload chapter
+        # Reload chapter and verify target_inline exists
+        from wenyi_core.markup.contracts import INLINE_META_KEY
         chapter = store.load_chapter(0)
-        # routing_handler returns "译X" format
-        assert "译" in chapter.segments[0].target or "润" in chapter.segments[0].target
-
-        # Verify target_inline exists
-        seg0 = chapter.segments[0]
-        target_inline = seg0.meta.get("target_inline")
-        assert target_inline is not None, "target_inline must exist"
+        text_segs = [s for s in chapter.segments if s.kind == "text"]
+        assert len(text_segs) >= 1, "Should have at least one text segment"
+        
+        # Verify first text segment has target_inline (contains emphasis)
+        seg_text = text_segs[0]
+        assert INLINE_META_KEY in seg_text.meta, "Should have epub_inline"
+        target_inline = seg_text.meta.get("target_inline")
+        assert target_inline is not None, "target_inline must exist for text segment with emphasis"
         assert isinstance(target_inline, dict)
+        assert target_inline.get("ranges"), "target_inline should have ranges"
 
         # Export Markdown
         md_path = str(tmp / "output.md")
-        orch.run_assemble(store, out_path=md_path, out_format="markdown")
+        orch.run_assemble(epub_path, out_path=md_path, out_format="markdown")
         assert Path(md_path).exists()
 
         md_content = Path(md_path).read_text(encoding="utf-8")
@@ -133,7 +137,7 @@ def test_e2e_simple_translation_state_and_export():
 
         # Export EPUB
         epub_out = str(tmp / "output.epub")
-        orch.run_assemble(store, out_path=epub_out, out_format="epub")
+        orch.run_assemble(epub_path, out_path=epub_out, out_format="epub")
         assert Path(epub_out).exists()
 
         # Verify EPUB
@@ -147,7 +151,7 @@ def test_e2e_simple_translation_state_and_export():
         # Verify no additional LLM calls during export
         call_count = len(client.calls)
         md_path2 = str(tmp / "output2.md")
-        orch.run_assemble(store, out_path=md_path2, out_format="markdown")
+        orch.run_assemble(epub_path, out_path=md_path2, out_format="markdown")
         assert len(client.calls) == call_count, "Export should not call LLM"
 
 
@@ -219,8 +223,8 @@ def test_missing_target_inline_fails_assembly():
         orch = Orchestrator(config, client=client)
 
         epub_out = str(tmp / "bad.epub")
-        with pytest.raises((ValueError, KeyError, AssertionError)):
-            orch.run_assemble(store, out_path=epub_out, out_format="epub")
+        with pytest.raises((ValueError, KeyError, AssertionError, InlinePreservationError)):
+            orch.run_assemble(epub_path, out_path=epub_out, out_format="epub")
 
         assert not Path(epub_out).exists(), "Failed assembly must not create output"
 
