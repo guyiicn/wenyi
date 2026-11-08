@@ -223,7 +223,7 @@ class Translator(Agent):
             return []
 
         # Prepare inline markers
-        from ..pipeline.translate.inline_translation import (
+        from ..markup.inline_translation import (
             decode_targets_with_inline,
             inline_preservation_prompt_suffix,
             prepare_sources_with_inline,

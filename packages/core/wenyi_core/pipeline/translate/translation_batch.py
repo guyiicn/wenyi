@@ -98,7 +98,7 @@ class TranslationBatchExecutor:
         before_polish: tuple[str | None, ...] = (None,) * len(targets)
         if polish:
             from ...markup.inline_markers import InlineNode
-            from ..translate.inline_translation import (
+            from ...markup.inline_translation import (
                 decode_targets_with_inline,
                 inline_preservation_prompt_suffix,
             )

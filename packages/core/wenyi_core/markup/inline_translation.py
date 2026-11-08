@@ -9,8 +9,8 @@ Integrate protected markers into the translation workflow:
 
 from __future__ import annotations
 
-from ...markup.contracts import INLINE_META_KEY
-from ...markup.inline_markers import (
+from .contracts import INLINE_META_KEY
+from .inline_markers import (
     InlineNode,
     decode_inline_markers,
     encode_inline_markers,
