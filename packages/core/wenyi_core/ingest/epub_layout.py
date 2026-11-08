@@ -305,6 +305,13 @@ def _logical_chapters(
                 continue
             for index, segment in enumerate(segments):
                 segment.index = index
+
+            # Collect image blocks from this resource
+            meta: dict[str, object] = {"epub_split_strategy": "spine-fallback"}
+            raw_image_blocks = resource.get("image_blocks")
+            if isinstance(raw_image_blocks, list) and raw_image_blocks:
+                meta["image_blocks"] = raw_image_blocks
+
             chapters.append(
                 Chapter(
                     index=len(chapters),
@@ -312,7 +319,7 @@ def _logical_chapters(
                     segments=segments,
                     href=str(resource.get("href") or "") or None,
                     template=None,
-                    meta={"epub_split_strategy": "spine-fallback"},
+                    meta=meta,
                 )
             )
         return chapters, "spine-fallback", canonical_toc_path
@@ -347,6 +354,22 @@ def _logical_chapters(
         meta: dict[str, object] = {"epub_split_strategy": strategy.name}
         if isinstance(toc_entry_id, str):
             meta["toc_entry_id"] = toc_entry_id
+
+        # Collect image blocks from all resources in this chapter
+        chapter_image_blocks: list[dict[str, object]] = []
+        covered_resources: set[str] = set()
+        for segment in segments:
+            if segment.resource_href and segment.resource_href not in covered_resources:
+                covered_resources.add(segment.resource_href)
+                resource = resource_by_href.get(segment.resource_href)
+                if resource:
+                    raw_blocks = resource.get("image_blocks")
+                    if isinstance(raw_blocks, list):
+                        chapter_image_blocks.extend(raw_blocks)
+
+        if chapter_image_blocks:
+            meta["image_blocks"] = chapter_image_blocks
+
         chapters.append(
             Chapter(
                 index=len(chapters),

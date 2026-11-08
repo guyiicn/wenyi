@@ -14,7 +14,6 @@ from wenyi_core.ingest.epub_package import (
 )
 from wenyi_core.ingest.epub_toc import parse_toc_entries
 from wenyi_core.markup.anchors import fragment_anchor_map
-from wenyi_core.markup.contracts import INLINE_META_KEY
 from wenyi_core.markup.segments import annotate_epub_resource
 from wenyi_core.models.document import Document
 
@@ -45,7 +44,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             if href not in names:
                 continue
             html = _decode_markup(zf.read(href))
-            title, segments, template = annotate_epub_resource(
+            title, segments, template, image_blocks = annotate_epub_resource(
                 html,
                 resource_index,
                 href,
@@ -60,6 +59,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
                     "segments": segments,
                     "template": template,
                     "fragment_anchors": fragment_anchor_map(template),
+                    "image_blocks": image_blocks,
                 }
             )
 
@@ -71,7 +71,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             if href in spine_hrefs or href not in names or href in toc_paths:
                 continue
             html = _decode_markup(zf.read(href))
-            title, segments, template = annotate_epub_resource(
+            title, segments, template, image_blocks = annotate_epub_resource(
                 html,
                 len(hrefs) + auxiliary_ordinal,
                 href,

@@ -183,35 +183,35 @@ class PreparationService:
         existing_manifest: dict,
     ) -> Storage:
         """Complete a glossary-only initialization by adding parsed chapters.
-        
+
         Preserves the glossary terms imported before prepare, adds parsed chapters,
         and removes the glossary_import_only marker.
         """
         # Stage the document to get chapters
         new_manifest = store.stage_document(doc)
-        
+
         # Merge with existing manifest to preserve glossary state
         # Keep source identity and language from existing
         merged_manifest = {
             **new_manifest,
             "source_sha256": existing_manifest.get("source_sha256", new_manifest["source_sha256"]),
         }
-        
+
         # Remove the glossary_import_only marker
         merged_manifest.pop("glossary_import_only", None)
-        
+
         # Write merged manifest
         store.write_artifact("manifest.json", merged_manifest)
-        
+
         # Mark initialization as complete
         store.finish_initialization()
-        
+
         store.log_event(
             "glossary_initialization_completed",
             input_path=input_path,
             chapter_count=len(merged_manifest.get("chapters", [])),
         )
-        
+
         return store
 
     def _prepare_locked(

@@ -371,8 +371,12 @@ def annotate_epub_resource(
     book_title: str = "",
     skip_navigation: bool = False,
     html_mode: bool = False,
-) -> tuple[str, list[Segment], str]:
-    """Annotate one physical XHTML and return its title, segments and backfill template.
+) -> tuple[str, list[Segment], str, list[dict[str, object]]]:
+    """Annotate one physical XHTML and return its title, segments, backfill template, and image blocks.
+
+    Image blocks are standalone images without text content, returned as:
+    [{"position": int, "images": [{"src": str, "alt": str}, ...]}]
+
     Use the physical resource index in anchors rather than the final Chapter index, so
     writers rebuild identical data-tn-id values even if logical chapter policies change.
     """
@@ -490,7 +494,35 @@ def annotate_epub_resource(
         if not _looks_like_internal_title(candidate, href, book_title):
             title = candidate
 
-    return title, segments, str(soup)
+    # Collect standalone image blocks (images without text content)
+    image_blocks: list[dict[str, object]] = []
+    body = soup.find("body")
+    if isinstance(body, Tag):
+        all_blocks = body.find_all(_BLOCK_CANDIDATE_TAGS)
+        position = 0
+        for block in all_blocks:
+            # Check if this block was already processed as a segment
+            if block.has_attr("data-tn-id"):
+                position += 1
+                continue
+
+            # Check if block contains only images (no text)
+            text_content = block.get_text(strip=True)
+            images = block.find_all("img")
+
+            if not text_content and images:
+                image_list = []
+                for img in images:
+                    src = img.get("src", "")
+                    alt = img.get("alt", "")
+                    if src:
+                        image_list.append({"src": str(src), "alt": str(alt)})
+
+                if image_list:
+                    image_blocks.append({"position": position, "images": image_list})
+                position += 1
+
+    return title, segments, str(soup), image_blocks
 
 
 def _inside_navigation_list(element: Tag) -> bool:

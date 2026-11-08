@@ -248,9 +248,33 @@ def _assemble_plain_text(
         if markdown and ch.title:
             blocks.append(f"# {ch.title}")
 
+        # Get image blocks for this chapter
+        raw_image_blocks = ch.meta.get("image_blocks")
+        image_blocks_by_position: dict[int, list[dict[str, str]]] = {}
+        if isinstance(raw_image_blocks, list):
+            for block in raw_image_blocks:
+                if isinstance(block, dict):
+                    position = block.get("position")
+                    images = block.get("images")
+                    if isinstance(position, int) and isinstance(images, list):
+                        image_blocks_by_position[position] = images
+
         # Process segments in order to maintain image/paragraph sequence
+        position = 0
         for seg in ch.segments:
+            # Output standalone image blocks at this position
+            if markdown and position in image_blocks_by_position:
+                for img_info in image_blocks_by_position[position]:
+                    src = img_info.get("src", "")
+                    alt = img_info.get("alt", "Image")
+                    if src and seg.resource_href:
+                        normalized_src = _normalize_epub_href(seg.resource_href, src)
+                        md_path = image_map.get(normalized_src, "")
+                        if md_path:
+                            blocks.append(f"![{alt}]({md_path})")
+
             if not seg.target:
+                position += 1
                 continue
 
             # Get images for this segment
@@ -307,6 +331,21 @@ def _assemble_plain_text(
                 if md_path:
                     alt_text = alt if alt else "Image"
                     blocks.append(f"![{alt_text}]({md_path})")
+
+            position += 1
+
+        # Output any remaining image blocks at the end
+        if markdown and position in image_blocks_by_position:
+            for img_info in image_blocks_by_position[position]:
+                src = img_info.get("src", "")
+                alt = img_info.get("alt", "Image")
+                if src and ch.segments:
+                    first_href = ch.segments[0].resource_href
+                    if first_href:
+                        normalized_src = _normalize_epub_href(first_href, src)
+                        md_path = image_map.get(normalized_src, "")
+                        if md_path:
+                            blocks.append(f"![{alt}]({md_path})")
 
         chapter_blocks.append("\n\n".join(blocks))
 
