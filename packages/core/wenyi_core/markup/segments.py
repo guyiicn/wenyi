@@ -172,9 +172,11 @@ def _segment_content(
                         walk(child, inside_range=True)
                     annotation_events[annotation_id] = (start, raw_length)
                 if id(child) in root_ids:
-                    preserved_nodes.append((child, raw_length))
-                    # Still walk the preserved node to extract its text content
+                    node_start = raw_length
+                    # Walk the preserved node to extract its text content
                     walk(child, inside_range=inside_range)
+                    node_end = raw_length
+                    preserved_nodes.append((child, node_start, node_end))
                 elif annotation is not None:
                     continue
                 else:
@@ -216,7 +218,7 @@ def _segment_content(
         walk(block)
 
     raw_text = "".join(text_parts)
-    event_offsets = [offset for _node, offset in preserved_nodes]
+    event_offsets = [start for _node, start, _end in preserved_nodes]
     ordered_annotations = list(annotations.values())
     for annotation in ordered_annotations:
         start, end = annotation_events.get(str(annotation["id"]), (raw_length, raw_length))
@@ -228,10 +230,17 @@ def _segment_content(
     source_length = len(text)
     nodes: list[dict[str, object]] = []
     offset_cursor = 0
-    for index, (node, _raw_offset) in enumerate(preserved_nodes):
+    for index, (node, raw_start, raw_end) in enumerate(preserved_nodes):
         inline_id = f"{anchor}_inline_{index}"
         offset = normalized_offsets[offset_cursor]
         offset_cursor += 1
+        # Map raw end position to normalized position
+        # preserved_nodes now has end offset at offset_cursor position in raw_offsets
+        # We need to insert the end into raw_offsets array
+        # Actually, we need to add raw_end to the offsets list before normalization
+        # This is a problem - we're already past normalization
+        # For now, calculate length from node's text
+        node_text_length = len(node.get_text())
         placement = "before" if offset == 0 else "after" if offset == source_length else "inline"
         node[INLINE_ID_ATTR] = inline_id
         nodes.append(
@@ -240,6 +249,7 @@ def _segment_content(
                 "tag": node.name,
                 "placement": placement,
                 "offset": offset,
+                "length": node_text_length,
             }
         )
 

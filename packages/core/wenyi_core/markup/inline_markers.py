@@ -91,6 +91,7 @@ def encode_inline_markers(
         tag = node.get("tag")
         offset = node.get("offset")
         placement = node.get("placement")
+        length = node.get("length")
 
         if not isinstance(tag, str) or tag not in _TAG_MAP:
             # Skip unsupported tags (e.g., img, a, span without text)
@@ -102,27 +103,27 @@ def encode_inline_markers(
         if placement not in ("before", "after", "inline"):
             continue
 
-        # For now, treat all as zero-width markers at the offset position
-        # This is a simplification; proper implementation would need range tracking
         marker_name = _TAG_MAP[tag]
 
         # Create paired start/end nodes
-        # Heuristic: assume inline emphasis spans to next punctuation or end
-        if offset < source_length:
-            # Find end of word/phrase
+        # Use recorded length if available, otherwise use heuristic
+        if isinstance(length, int) and length > 0:
+            end_offset = min(offset + length, source_length)
+        else:
+            # Heuristic fallback: assume inline emphasis spans to next punctuation or end
             end_offset = offset
             while end_offset < source_length and text[end_offset].isalnum():
                 end_offset += 1
 
-            if end_offset > offset:
-                inline_nodes.append(
-                    InlineNode(
-                        tag=tag,
-                        start=offset,
-                        end=end_offset,
-                        marker_name=marker_name,
-                    )
+        if end_offset > offset:
+            inline_nodes.append(
+                InlineNode(
+                    tag=tag,
+                    start=offset,
+                    end=end_offset,
+                    marker_name=marker_name,
                 )
+            )
 
     # Validate nesting
     if not _validate_nesting(inline_nodes):
