@@ -131,9 +131,15 @@ class TestPunct(unittest.TestCase):
             normalize_zh_segments(["well--known — pause"])[0],
             "well--known — pause",
         )
-        # CJK neighbours still convert, including single em dashes between CJK.
-        self.assertEqual(normalize_zh_segments(["前—后"])[0], "前——后")
+        # Single em dash (—) preserved for proper names (regression: 马拉斯塔尔—苏卢斯特).
+        self.assertEqual(normalize_zh_segments(["前—后"])[0], "前—后")
+        self.assertEqual(normalize_zh_segments(["马拉斯塔尔—苏卢斯特"])[0], "马拉斯塔尔—苏卢斯特")
+        self.assertEqual(normalize_zh_segments(["阿布雷加多—雷"])[0], "阿布雷加多—雷")
+        # Multiple consecutive dashes convert to doubled form.
         self.assertEqual(normalize_zh_segments(["走出——房间"])[0], "走出——房间")
+        self.assertEqual(normalize_zh_segments(["前——后"])[0], "前——后")
+        # Multiple em dashes also convert.
+        self.assertEqual(normalize_zh_segments(["前———后"])[0], "前——后")
 
     def test_word_final_apostrophe_is_a_right_apostrophe(self):
         self.assertEqual(normalize_zh_segments(["James' book"])[0], "James’ book")

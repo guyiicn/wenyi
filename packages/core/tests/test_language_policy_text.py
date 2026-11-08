@@ -115,19 +115,29 @@ def test_pending_and_intentionally_empty_targets_remain_distinct():
     assert normalize_chinese(request).targets == (None, "", "中文。")
 
 
-@pytest.mark.parametrize("mark", ["—", "…"])
+@pytest.mark.parametrize("mark", ["…"])
 def test_boundary_map_includes_punctuation_inserted_at_paragraph_start(mark):
+    # Ellipsis … converts to ……, requiring boundary remapping.
+    # Single em dash — no longer converts (proper name preservation).
     before = mark + "你好"
     after = mark * 2 + "你好"
     assert boundary_map(before, after) == (0, 2, 3, 4)
 
 
-@pytest.mark.parametrize("mark", ["—", "…"])
+def test_boundary_map_unchanged_for_single_em_dash():
+    # Single em dash — preserved (proper names like 马拉斯塔尔—苏卢斯特).
+    before = "—你好"
+    after = "—你好"
+    assert boundary_map(before, after) == (0, 1, 2, 3)
+
+
+@pytest.mark.parametrize("mark", ["…"])
 @pytest.mark.parametrize("split", [False, True])
 @pytest.mark.parametrize("empty_segments", [False, True])
 def test_normalization_preserves_leading_punctuation_and_segment_boundaries(
     mark, split, empty_segments
 ):
+    # Ellipsis … converts to ……; single em dash — now preserved.
     targets = (mark, "你好") if split else (mark + "你好",)
     if empty_segments:
         targets = ("", *targets, "")
@@ -148,6 +158,33 @@ def test_normalization_preserves_leading_punctuation_and_segment_boundaries(
     assert result.logical_boundary_maps == ((0, 2, 3, 4),)
 
 
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("empty_segments", [False, True])
+def test_normalization_preserves_single_em_dash_without_remapping(split, empty_segments):
+    # Single em dash — preserved for proper names (no doubling, no boundary change).
+    mark = "—"
+    targets = (mark, "你好") if split else (mark + "你好",)
+    if empty_segments:
+        targets = ("", *targets, "")
+    request = ExportTextInput(
+        tuple(3 + index * 4 for index in range(len(targets))),
+        targets,
+        (False, *(True for _ in targets[1:])),
+        ((0, len(targets)),),
+    )
+    result = normalize_chinese(request)
+    # Em dash stays as single character, no doubling.
+    expected = (mark, "你好") if split else (mark + "你好",)
+    if empty_segments:
+        expected = ("", *expected, "")
+    assert result.targets == expected
+    assert result.segment_ids == request.segment_ids
+    assert result.continuations == request.continuations
+    assert result.logical_ranges == request.logical_ranges
+    # No length change, so boundary map is identity: (0, 1, 2, 3).
+    assert result.logical_boundary_maps == ((0, 1, 2, 3),)
+
+
 def test_validation_rejects_a_boundary_map_that_omits_the_paragraph_prefix():
     request = ExportTextInput((0,), ("甲",), (False,), ((0, 1),))
     result = ExportTextResult((0,), ("乙甲",), (False,), ((0, 1),), ((1, 2),))
@@ -155,10 +192,12 @@ def test_validation_rejects_a_boundary_map_that_omits_the_paragraph_prefix():
         validate_result(request, result)
 
 
-@pytest.mark.parametrize("mark", ["—", "…"])
+@pytest.mark.parametrize("mark", ["…"])
 def test_leading_punctuation_remaps_annotations_and_styles_without_changing_snapshot(
     tmp_path, mark
 ):
+    # Ellipsis … converts to ……, requiring annotation/style remapping.
+    # Single em dash — no longer converts (proper name preservation).
     before = mark + "你好"
     after = mark * 2 + "你好"
     metadata = {
