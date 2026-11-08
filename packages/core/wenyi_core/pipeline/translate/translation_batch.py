@@ -109,7 +109,9 @@ class TranslationBatchExecutor:
             encoded_targets: list[str] = []
             inline_nodes_per_target: list[list[InlineNode] | None] = []
 
-            for target, inline_meta in zip(targets, inline_metas if inline_metas else [{}] * len(targets)):
+            for target, inline_meta in zip(
+                targets, inline_metas if inline_metas else [{}] * len(targets)
+            ):
                 if not isinstance(inline_meta, dict):
                     encoded_targets.append(target)
                     inline_nodes_per_target.append(None)
@@ -130,17 +132,21 @@ class TranslationBatchExecutor:
                     start = r.get("start")
                     end = r.get("end")
                     if isinstance(tag, str) and isinstance(start, int) and isinstance(end, int):
-                        marker_name = {"i": "I", "em": "EM", "strong": "STRONG", "b": "B"}.get(tag, tag.upper())
-                        nodes.append(InlineNode(tag=tag, start=start, end=end, marker_name=marker_name))
+                        marker_name = {"i": "I", "em": "EM", "strong": "STRONG", "b": "B"}.get(
+                            tag, tag.upper()
+                        )
+                        nodes.append(
+                            InlineNode(tag=tag, start=start, end=end, marker_name=marker_name)
+                        )
 
                 if nodes:
                     # Insert markers in reverse order
                     encoded = target
                     for node in sorted(nodes, key=lambda n: n.start, reverse=True):
                         marker = f"[[{node.marker_name}_END]]"
-                        encoded = encoded[:node.end] + marker + encoded[node.end:]
+                        encoded = encoded[: node.end] + marker + encoded[node.end :]
                         marker = f"[[{node.marker_name}_START]]"
-                        encoded = encoded[:node.start] + marker + encoded[node.start:]
+                        encoded = encoded[: node.start] + marker + encoded[node.start :]
                     encoded_targets.append(encoded)
                     inline_nodes_per_target.append(nodes)
                 else:
@@ -168,7 +174,6 @@ class TranslationBatchExecutor:
 
             if turn is not None and indices is not None:
                 # Continue with encoded targets
-                encoded_filtered = [encoded_targets[i] for i in indices]
                 continued = self._polisher.polish_continue(
                     turn,
                     n=len(indices),

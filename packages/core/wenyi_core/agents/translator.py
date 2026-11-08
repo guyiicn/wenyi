@@ -268,7 +268,7 @@ class Translator(Agent):
                     translated_annotation_contexts,
                     next_source=batch_next_source,
                     allow_empty_translations=allow_empty_translations,
-                    inline_preservation_suffix=inline_preservation_prompt_suffix() if has_inline_markers else "",
+                    inline_suffix=inline_preservation_prompt_suffix() if has_inline_markers else "",
                 )
 
                 # Decode inline markers from translated text
