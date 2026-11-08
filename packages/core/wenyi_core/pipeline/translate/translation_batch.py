@@ -173,7 +173,7 @@ class TranslationBatchExecutor:
             polished: list[str] | None = None
 
             if turn is not None and indices is not None:
-                # Continue with encoded targets
+                # Continue with encoded targets (keep markers for decode)
                 continued = self._polisher.polish_continue(
                     turn,
                     n=len(indices),
@@ -182,7 +182,7 @@ class TranslationBatchExecutor:
                 if continued is not None and len(continued) == len(indices):
                     polished = list(encoded_targets)
                     for index, text in zip(indices, continued):
-                        polished[index] = strip_ruby_markers(text)
+                        polished[index] = text  # Keep markers, will decode later
 
             if polished is None:
                 polished = self._polisher.polish(
@@ -199,6 +199,8 @@ class TranslationBatchExecutor:
 
             # Decode inline markers from polished text
             if len(polished) == len(targets):
+                # Strip ruby markers first, then decode inline
+                polished = [strip_ruby_markers(text) for text in polished]
                 clean_polished, new_inline_metas, warnings = decode_targets_with_inline(
                     polished, inline_nodes_per_target
                 )
