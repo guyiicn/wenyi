@@ -97,152 +97,37 @@ def _create_test_epub(epub_path: str) -> None:
 def _translation_handler(messages, tier, json_mode):
     """Fake LLM handler: return Chinese with different length/word order than source."""
     import re
+    import json
+    from tests.fake_llm import routing_handler as base_routing_handler
 
     system = messages[0]["content"]
     user = messages[-1]["content"]
-    
-    # DEBUG
-    def debug_return(value, label):
-        print(f"\n=== HANDLER RETURN ({label}) ===")
-        print(f"Value (first 200): {str(value)[:200]}")
-        return value
 
-    # Language detection
-    if "language detector" in system.lower():
-        return debug_return(json.dumps({"language": "en"}, ensure_ascii=False), "language")
-
-    # Pre-translation analysis
-    if "analyst" in system.lower() or "analysis" in system.lower():
-        return debug_return(json.dumps(
-            {
-                "genre": "技术",
-                "tone": "正式",
-                "style_guide": "准确",
-                "characters": [],
-            },
-            ensure_ascii=False,
-        ), "analyst")
-
-    # Title translation
-    if "title" in system.lower() and "translat" in system.lower():
-        # Count titles
-        n = len(re.findall(r"^\[(\d+)\]", user, re.MULTILINE))
-        if n == 0:
-            n = 1
-        return debug_return(json.dumps({"titles": ["第一章"] * n}, ensure_ascii=False), "title")
-
-    # Main translation: return Chinese with significantly different length/order
-    if "literary translator" in system.lower() or "translator" in system.lower():
-        # Check if this is polish request
-        if "polish" in user.lower() or "polish" in system.lower():
-            print(f"\n=== POLISH BRANCH ===")
-            # Polish: change text but preserve inline markers
-            for msg in reversed(messages[:-1]):
-                if msg.get("role") == "assistant":
-                    try:
-                        prev = json.loads(msg["content"])
-                        translations = prev.get("translations", [])
-                        print(f"Found prev translations: {len(translations)}")
-                        if translations:
-                            polished = []
-                            marker_pattern = r"(\[\[[A-Z_0-9]+_(?:START|END)\]\])"
-                            for t in translations:
-                                # Preserve markers while changing text
-                                parts = re.split(marker_pattern, t)
-                                result = []
-                                for part in parts:
-                                    if re.match(marker_pattern, part):
-                                        # Keep marker as-is
-                                        result.append(part)
-                                    elif part.strip():
-                                        # Change text but preserve markers
-                                        result.append(part.replace("译", "润"))
-                                    else:
-                                        result.append(part)
-                                polished.append("".join(result))
-                            return debug_return(json.dumps({"polished": polished}, ensure_ascii=False), "polish-from-prev")
-                    except (json.JSONDecodeError, KeyError) as e:
-                        print(f"Polish error: {e}")
-                        pass
-            print("Polish fallback: no prev translations")
-            return debug_return(json.dumps({"polished": []}, ensure_ascii=False), "polish-empty")
-
-        # Extract numbered paragraphs and preserve inline markers
+    # Only override main translation with markers, everything else use routing_handler
+    if "literary translator" in system.lower() and "[English paragraphs to translate]" in user:
+        # Extract numbered paragraphs
         paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)
-        print(f"\n=== TRANSLATION BRANCH ===")
-        print(f"Found {len(paragraphs)} paragraphs")
         if not paragraphs:
-            # Fallback
-            n = len(re.findall(r"^\[(\d+)\]", user, re.MULTILINE))
-            print(f"Fallback: {n} numbered items")
-            return debug_return(json.dumps({"translations": ["译文"] * n}, ensure_ascii=False), "translation-fallback")
+            return base_routing_handler(messages, tier, json_mode)
         
-        # Return translations preserving inline markers exactly
+        # Translate preserving inline markers
         translations = []
         marker_pattern = r"(\[\[[A-Z_0-9]+_(?:START|END)\]\])"
-        
-        for i, (idx, source_text) in enumerate(paragraphs):
-            # Split by markers
-            parts = re.split(marker_pattern, source_text)
-            
-            result = []
-            for part in parts:
-                if re.match(marker_pattern, part):
-                    # Keep marker as-is
-                    result.append(part)
-                elif part.strip():
-                    # Translate text part, keep markers separate
-                    result.append(f"译{i}")
-                else:
-                    result.append(part)
-            
-            translations.append("".join(result))
-        
-        result = json.dumps({"translations": translations}, ensure_ascii=False)
-        return debug_return(result, "translation")
-
-    # Prose editor / polish
-    if "prose editor" in system.lower():
-        # Extract numbered paragraphs and preserve inline markers
-        paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)
-        if not paragraphs:
-            n = len(re.findall(r"^\[(\d+)\]", user, re.MULTILINE))
-            return json.dumps({"polished": ["润文"] * n}, ensure_ascii=False)
-        
-        polished = []
-        marker_pattern = r"(\[\[[A-Z_0-9]+_(?:START|END)\]\])"
         for idx, text in paragraphs:
-            # Preserve markers while polishing
             parts = re.split(marker_pattern, text)
             result = []
             for part in parts:
                 if re.match(marker_pattern, part):
                     result.append(part)
                 elif part.strip():
-                    result.append(part.replace("译文", "润色后译文"))
+                    result.append(f"译{idx}")
                 else:
                     result.append(part)
-            polished.append("".join(result))
-        
-        result = json.dumps({"polished": polished}, ensure_ascii=False)
-        return debug_return(result, "polish")
-
-    # Review
-    if "reviewer" in system.lower():
-        return debug_return(json.dumps(
-            {"issues": [], "reviewed_segments": 4, "complete": True}, ensure_ascii=False
-        ), "review")
-
-    # Chapter digest
-    if "digest" in system.lower() or "synopsis" in system.lower():
-        return debug_return("本章内容：介绍人物和场景。", "digest")
-
-    # Default
-    result = "{}" if json_mode else ""
-    print(f"\n=== HANDLER DEFAULT FALLBACK ===")
-    print(f"System (first 100): {system[:100]}")
-    print(f"User (first 100): {user[:100]}")
-    return result
+            translations.append("".join(result))
+        return json.dumps({"translations": translations}, ensure_ascii=False)
+    
+    # Fallback to routing_handler for all other requests
+    return base_routing_handler(messages, tier, json_mode)
 
 
 def test_e2e_translation_with_emphasis_images_and_dual_format_export():
@@ -286,7 +171,7 @@ def test_e2e_translation_with_emphasis_images_and_dual_format_export():
 
         # Reload chapter from disk
         chapter = store.load_chapter(0)
-        assert chapter.title == "第一章"
+        assert chapter.title == "标题0"  # routing_handler returns "标题{i}"
         assert len(chapter.segments) == 4
 
         # Verify translations were applied
