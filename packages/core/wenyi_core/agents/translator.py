@@ -97,6 +97,7 @@ class Translator(Agent):
         next_source: str = "",
         *,
         allow_empty_translations: bool = False,
+        inline_suffix: str = "",
     ) -> tuple[list[str], Messages]:
         """Translate one batch and validate output types, count and (by default) nonempty content.
 
