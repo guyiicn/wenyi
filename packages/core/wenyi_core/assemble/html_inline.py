@@ -413,8 +413,16 @@ def _replace_block_content(
 
         # Clear emphasis tags since their text is already in the target
         # Atomic tags (img, video) keep their original content
-        _EMPHASIS_TAGS = {"i", "em", "strong", "b", "span"}
+        _EMPHASIS_TAGS = {"i", "em", "strong", "b"}
         is_emphasis = isinstance(tag, str) and tag in _EMPHASIS_TAGS
+        
+        # Check if span has structural attributes (id/class) or is emphasis-only
+        is_structural_span = (
+            isinstance(tag, str) 
+            and tag == "span" 
+            and (node.has_attr("id") or node.has_attr("class"))
+        )
+        
         if is_emphasis:
             node.clear()
 
@@ -429,7 +437,11 @@ def _replace_block_content(
                 has_verified_position = True
 
         # Skip emphasis tags without verified positions (flattened during translation)
+        # Structural spans with id/class are preserved even without verified positions
         if is_emphasis and not has_verified_position:
+            continue
+        if tag == "span" and not is_structural_span and not has_verified_position:
+            # CSS emphasis span without verified position, skip it
             continue
 
         # Fallback to proportional mapping for atomic tags

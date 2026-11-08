@@ -62,7 +62,12 @@ def _preserved_inline_roots(block: Tag, css_rules: dict[str, dict[str, str]] | N
             and not candidate.get_text(strip=True)
             and (candidate.has_attr("id") or candidate.has_attr("name"))
         )
-        if not is_atomic and not is_emphasis and not is_css_emphasis and not is_empty_anchor:
+        # Preserve structural spans with id/class even if no text emphasis
+        is_structural_span = (
+            candidate.name == "span"
+            and (candidate.has_attr("id") or candidate.has_attr("class"))
+        )
+        if not is_atomic and not is_emphasis and not is_css_emphasis and not is_empty_anchor and not is_structural_span:
             continue
 
         root = candidate
