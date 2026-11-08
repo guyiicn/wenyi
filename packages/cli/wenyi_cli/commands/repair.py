@@ -129,10 +129,12 @@ def _fix_inline_markers(state_dir: str, chapter: int, segment: int, expected_tex
             typer.echo(f"  Add target_inline with {len(positions)} ranges")
         return
     
-    # Backup
+    # Backup to safe location
     chapter_file = state_path / "chapters" / f"ch{chapter}.json"
     if chapter_file.exists():
-        backup_file = chapter_file.with_suffix(f".bak-seg{segment}.json")
+        backups_dir = state_path / "backups"
+        backups_dir.mkdir(exist_ok=True)
+        backup_file = backups_dir / f"ch{chapter}.bak-seg{segment}.json"
         shutil.copy2(chapter_file, backup_file)
         typer.echo(f"✓ Backup: {backup_file}")
     
@@ -261,7 +263,9 @@ def _apply_target(
         # Backup
         chapter_file = state_path / "chapters" / f"ch{chapter}.json"
         if chapter_file.exists():
-            backup_file = chapter_file.with_suffix(f".bak-seg{segment}.json")
+            backups_dir = state_path / "backups"
+            backups_dir.mkdir(exist_ok=True)
+            backup_file = backups_dir / f"ch{chapter}.bak-seg{segment}.json"
             if not backup_file.exists():
                 shutil.copy2(chapter_file, backup_file)
                 typer.echo(f"✓ Backup: {backup_file}")
@@ -299,7 +303,9 @@ def _apply_target(
         # Backup
         chapter_file = state_path / "chapters" / f"ch{chapter}.json"
         if chapter_file.exists():
-            backup_file = chapter_file.with_suffix(f".bak-seg{segment}.json")
+            backups_dir = state_path / "backups"
+            backups_dir.mkdir(exist_ok=True)
+            backup_file = backups_dir / f"ch{chapter}.bak-seg{segment}.json"
             if not backup_file.exists():
                 shutil.copy2(chapter_file, backup_file)
                 typer.echo(f"✓ Backup: {backup_file}")

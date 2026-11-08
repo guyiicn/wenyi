@@ -208,8 +208,9 @@ def test_apply_target_with_valid_markers(test_state: Path):
 
 
 def test_apply_target_creates_backup(test_state: Path):
-    """Modification must create backup file."""
-    backup_file = test_state / "chapters" / "ch0.bak-seg10.json"
+    """Modification must create backup file in safe backups/ directory."""
+    backups_dir = test_state / "backups"
+    backup_file = backups_dir / "ch0.bak-seg10.json"
     assert not backup_file.exists()
 
     result = runner.invoke(
@@ -230,7 +231,10 @@ def test_apply_target_creates_backup(test_state: Path):
     )
 
     assert result.exit_code == 0
+    assert backups_dir.exists()
     assert backup_file.exists()
+    # Verify not in chapters/ directory
+    assert not (test_state / "chapters" / "ch0.bak-seg10.json").exists()
 
 
 def test_fix_inline_markers_decodes_literal_markers(test_state: Path):
