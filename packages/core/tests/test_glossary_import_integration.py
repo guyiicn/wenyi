@@ -168,14 +168,13 @@ class TestGlossaryImportPrompts(unittest.TestCase):
     def test_only_chapter_sends_single_chapter_source(self):
         """Using --chapter with imported glossary sends only that chapter's source."""
         with tempfile.TemporaryDirectory() as tmp:
-            # Two-chapter book
+            # Two-chapter book (use Markdown headings for chapter detection)
             txt = os.path.join(tmp, "novel.txt")
             with open(txt, "w", encoding="utf-8") as f:
                 f.write(
-                    "Two Chapters\n\n"
-                    "Chapter 1\n\n"
+                    "# Chapter 1\n\n"
                     "First chapter text about Jedi.\n\n"
-                    "Chapter 2\n\n"
+                    "# Chapter 2\n\n"
                     "Second chapter text about Sith."
                 )
 

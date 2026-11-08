@@ -358,6 +358,11 @@ def _assemble_plain_text(
                         if md_path:
                             blocks.append(f"![{alt}]({md_path})")
 
+            # Skip attribute segments (e.g., img alt text) - they should not appear as body paragraphs
+            if "html_attribute" in seg.meta:
+                position += 1
+                continue
+            
             if not seg.target:
                 position += 1
                 continue

@@ -82,7 +82,7 @@ class TranslationService:
             progress_chapters = [chapter["index"] for chapter in manifest.get("chapters", [])]
 
         total, done = self.progress_counts(store, progress_chapters)
-        translation_history, source_corpus = self.load_translation_inputs(store)
+        translation_history, source_corpus = self.load_translation_inputs(store, chapter_filter=targets if only_chapter is not None else None)
         annotation_context_registry = store.load_annotation_contexts()
         policy = self._runtime.config.language_policy("translation")
         terminology = (
@@ -133,18 +133,22 @@ class TranslationService:
     @staticmethod
     def load_translation_inputs(
         store: Storage,
+        *,
+        chapter_filter: list[int] | None = None,
     ) -> tuple[dict[tuple[int, int], TranslatedSegmentEvidence], str]:
         """Read chapters once to rebuild translated-history indices and concatenate the source
-        corpus.
+        corpus. When chapter_filter is provided (for only_chapter), only load those chapters.
         """
         history: dict[tuple[int, int], TranslatedSegmentEvidence] = {}
         source_parts: list[str] = []
         manifest = store.load_manifest()
-        chapter_indices = sorted(
+        all_chapter_indices = sorted(
             chapter["index"]
             for chapter in manifest.get("chapters", [])
             if isinstance(chapter.get("index"), int)
         )
+        # Use chapter_filter if provided (for only_chapter isolation)
+        chapter_indices = chapter_filter if chapter_filter is not None else all_chapter_indices
         for chapter_index in chapter_indices:
             chapter = store.load_chapter(chapter_index)
             segments = chapter.text_segments
