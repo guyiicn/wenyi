@@ -302,6 +302,7 @@ class RunStore(FileArtifacts):
             "source_lang": doc.source_lang,
             "target_lang": doc.target_lang,
             "meta": document_meta,
+            "inline_detection_version": 1,  # Segments without epub_inline are verified plain text
             "chapters": [
                 {
                     "index": c.index,

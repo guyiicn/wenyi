@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from wenyi_core.assemble.inline_validation import InlinePreservationError
+from wenyi_core.assemble.inline_validation import (
+    InlinePreservationError,
+    validate_inline_preservation_for_export,
+)
 from wenyi_core.config import Config
 from wenyi_core.models.document import Chapter, Segment
 from wenyi_core.pipeline.orchestrator import Orchestrator
@@ -85,6 +88,13 @@ def test_old_state_with_emphasis_fails_export():
 
         # Run translation to get state with inline metadata
         store = orch.run(str(epub_path))
+        
+        # Strip version to simulate old state
+        manifest = store.load_manifest()
+        if "inline_detection_version" in manifest:
+            del manifest["inline_detection_version"]
+        store.save_manifest(manifest)
+        
         chapter = store.load_chapter(0)
 
         # Simulate old state by removing inline metadata (both old and new keys)
@@ -369,7 +379,12 @@ def test_ambiguous_repeated_text_with_different_emphasis_fails():
         orch = Orchestrator(config, client=client)
         store = orch.run(str(epub_path))
 
-        # Strip inline metadata
+        # Strip inline metadata and version to simulate old state
+        manifest = store.load_manifest()
+        if "inline_detection_version" in manifest:
+            del manifest["inline_detection_version"]
+        store.save_manifest(manifest)
+        
         chapter = store.load_chapter(0)
         for seg in chapter.segments:
             if "epub_inline" in seg.meta:
@@ -454,6 +469,12 @@ def test_segment_text_not_in_source_resource_fails():
         # Translate
         store = orch.run(str(epub_path))
 
+        # Strip version to simulate old state
+        manifest = store.load_manifest()
+        if "inline_detection_version" in manifest:
+            del manifest["inline_detection_version"]
+        store.save_manifest(manifest)
+        
         # Manually modify segment source to not match HTML
         chapter = store.load_chapter(0)
         if chapter.segments:
@@ -541,6 +562,12 @@ def test_missing_resource_href_fails():
         # Translate
         store = orch.run(str(epub_path))
 
+        # Strip version to simulate old state
+        manifest = store.load_manifest()
+        if "inline_detection_version" in manifest:
+            del manifest["inline_detection_version"]
+        store.save_manifest(manifest)
+        
         # Strip resource_href and inline metadata (very old state)
         chapter = store.load_chapter(0)
         for seg in chapter.segments:
@@ -596,7 +623,12 @@ def test_real_light_of_jedi_old_state_cli_rejects_export():
         # Translate to get state
         store = orch.run(str(real_epub))
 
-        # Strip inline metadata to simulate old state (v1166-era)
+        # Strip inline metadata and version to simulate old state (v1166-era)
+        manifest = store.load_manifest()
+        if "inline_detection_version" in manifest:
+            del manifest["inline_detection_version"]
+        store.save_manifest(manifest)
+        
         chapter = store.load_chapter(0)
         for seg in chapter.segments:
             if "epub_inline" in seg.meta:
@@ -692,7 +724,12 @@ def test_error_message_mentions_old_state_issue():
         orch = Orchestrator(config, client=client)
         store = orch.run(str(epub_path))
 
-        # Strip inline metadata
+        # Strip inline metadata and version to simulate old state
+        manifest = store.load_manifest()
+        if "inline_detection_version" in manifest:
+            del manifest["inline_detection_version"]
+        store.save_manifest(manifest)
+        
         chapter = store.load_chapter(0)
         for seg in chapter.segments:
             if "epub_inline" in seg.meta:
@@ -719,3 +756,44 @@ def test_error_message_mentions_old_state_issue():
         
         # Should NOT create output file
         assert not Path(md_path).exists(), "Output should not be created on validation failure"
+
+
+def test_mixed_chapter_new_version_with_missing_target_inline_rejected():
+    """Mixed chapter: new version + segment with epub_inline but no target_inline → reject."""
+    segments = [
+        Segment(
+            index=0,
+            kind="text",
+            source="Plain text segment.",
+            target="纯文本段落。",
+            meta={},  # No epub_inline: verified plain text in new state
+        ),
+        Segment(
+            index=1,
+            kind="text",
+            source="Text with emphasis.",
+            target="带强调的文本。",
+            meta={
+                "epub_inline": {
+                    "version": 1,
+                    "source_length": 20,
+                    "nodes": [
+                        {"id": "tn0_1_inline_0", "tag": "em", "placement": "inline", "offset": 10, "length": 8}
+                    ],
+                }
+                # Missing target_inline!
+            },
+        ),
+    ]
+    
+    chapter = Chapter(index=0, title="Mixed Chapter", href="c1.xhtml", segments=segments)
+    
+    # New state (version 1)
+    manifest = {"inline_detection_version": 1, "fmt": "epub"}
+    
+    with pytest.raises(InlinePreservationError) as exc_info:
+        validate_inline_preservation_for_export([chapter], manifest=manifest)
+    
+    error_msg = str(exc_info.value)
+    assert "Segment 1" in error_msg
+    assert ("inline" in error_msg.lower() and ("target" in error_msg.lower() or "positions" in error_msg.lower()))

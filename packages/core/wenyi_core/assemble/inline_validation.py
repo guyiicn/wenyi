@@ -166,35 +166,31 @@ def validate_inline_preservation_for_export(
         chapters: Chapters to validate
         allow_proportional_fallback: If False, reject segments with inline markup but no target_inline
         source_path: Path to source EPUB for re-scanning old state without INLINE_META_KEY
-        manifest: Manifest dict for EPUB metadata
+        manifest: Manifest dict for inline_detection_version and EPUB metadata
 
     Raises:
         InlinePreservationError: If inline preservation is unreliable
     """
     issues: list[str] = []
+    
+    # Check if this is new reliable state (version 1+)
+    # New state: segments without epub_inline are verified plain text (no emphasis)
+    # Old state: segments without epub_inline need re-scan to verify emphasis
+    inline_version = manifest.get("inline_detection_version", 0) if manifest else 0
+    is_new_state = inline_version >= 1
 
     for chapter in chapters:
-        # Detect if this is new state (has any segment with INLINE_META_KEY)
-        # In new state, segments without INLINE_META_KEY are plain text (no emphasis)
-        # In old state, segments might lack INLINE_META_KEY even if source has emphasis
-        has_any_inline_meta = any(
-            isinstance(seg.meta.get(INLINE_META_KEY), dict)
-            for seg in chapter.segments
-        )
-        
         for segment in chapter.segments:
-            # Check if segment has source inline markup metadata (new state)
+            # Check if segment has source inline markup metadata
             raw_inline = segment.meta.get(INLINE_META_KEY)
             
-            # Old state detection: no INLINE_META_KEY but might have emphasis in source EPUB
+            # Segment without inline metadata
             if not isinstance(raw_inline, dict):
-                # If chapter has any inline_meta, this is new state
-                # Segments without inline_meta are plain text (no emphasis to preserve)
-                if has_any_inline_meta:
-                    # New state: missing inline_meta means no emphasis in source
+                # New state (version 1+): missing inline_meta means verified plain text
+                if is_new_state:
                     continue
                 
-                # Old state or uncertain: re-scan source EPUB to detect emphasis
+                # Old state (version 0): re-scan source EPUB to detect emphasis
                 if source_path and manifest:
                     result = _detect_emphasis_in_epub_source(
                         source_path, manifest, chapter, segment
