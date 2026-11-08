@@ -30,10 +30,11 @@ _REVERSE_TAG_MAP = {v: k for k, v in _TAG_MAP.items()}
 class InlineNode:
     """Inline markup node with position info."""
 
-    tag: str  # Original HTML tag name (i, em, strong, b)
+    tag: str  # Original HTML tag name (i, em, strong, b, span)
     start: int  # Character offset in source text
     end: int  # Character offset in source text
-    marker_name: str  # Internal marker name (I, EM, STRONG, B)
+    marker_name: str  # Internal marker name (I, EM, STRONG, B, SPAN)
+    css_style: str | None = None  # For span: "italic", "bold", or None
 
 
 def _validate_nesting(nodes: list[InlineNode]) -> bool:
@@ -92,6 +93,7 @@ def encode_inline_markers(
         offset = node.get("offset")
         placement = node.get("placement")
         length = node.get("length")
+        css_style = node.get("css_style")
 
         if not isinstance(tag, str) or tag not in _TAG_MAP:
             # Skip unsupported tags (e.g., img, a, span without text)
@@ -122,6 +124,7 @@ def encode_inline_markers(
                     start=offset,
                     end=end_offset,
                     marker_name=marker_name,
+                    css_style=css_style if isinstance(css_style, str) else None,
                 )
             )
 

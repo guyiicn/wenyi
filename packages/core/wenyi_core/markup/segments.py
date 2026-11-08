@@ -243,15 +243,26 @@ def _segment_content(
         node_text_length = len(node.get_text())
         placement = "before" if offset == 0 else "after" if offset == source_length else "inline"
         node[INLINE_ID_ATTR] = inline_id
-        nodes.append(
-            {
-                "id": inline_id,
-                "tag": node.name,
-                "placement": placement,
-                "offset": offset,
-                "length": node_text_length,
-            }
-        )
+        
+        # Determine CSS style for spans
+        css_style = None
+        if node.name == "span" and css_rules:
+            from .css_emphasis import has_italic_style, has_bold_style
+            if has_italic_style(node, css_rules):
+                css_style = "italic"
+            elif has_bold_style(node, css_rules):
+                css_style = "bold"
+        
+        node_dict = {
+            "id": inline_id,
+            "tag": node.name,
+            "placement": placement,
+            "offset": offset,
+            "length": node_text_length,
+        }
+        if css_style:
+            node_dict["css_style"] = css_style
+        nodes.append(node_dict)
 
     meta: dict[str, object] = {}
     if nodes:

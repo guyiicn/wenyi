@@ -416,16 +416,6 @@ def _replace_block_content(
         _EMPHASIS_TAGS = {"i", "em", "strong", "b"}
         is_emphasis = isinstance(tag, str) and tag in _EMPHASIS_TAGS
         
-        # Check if span has structural attributes (id/class) or is emphasis-only
-        is_structural_span = (
-            isinstance(tag, str) 
-            and tag == "span" 
-            and (node.has_attr("id") or node.has_attr("class"))
-        )
-        
-        if is_emphasis:
-            node.clear()
-
         # Use verified position if available
         target_offset = None
         has_verified_position = False
@@ -436,12 +426,28 @@ def _replace_block_content(
                 target_offset = start
                 has_verified_position = True
 
+        # Determine if this span should be cleared (CSS emphasis) or preserved (structural)
+        should_clear_span = False
+        is_structural_span = False
+        if isinstance(tag, str) and tag == "span":
+            # If span has verified position, it was translated -> clear it
+            # Otherwise, if it has id/class, it's structural -> keep it
+            if has_verified_position:
+                should_clear_span = True
+            elif node.has_attr("id") or node.has_attr("class"):
+                is_structural_span = True
+        
+        if is_emphasis:
+            node.clear()
+        elif should_clear_span:
+            node.clear()
+
         # Skip emphasis tags without verified positions (flattened during translation)
-        # Structural spans with id/class are preserved even without verified positions
+        # Structural spans are allowed to fallback
         if is_emphasis and not has_verified_position:
             continue
         if tag == "span" and not is_structural_span and not has_verified_position:
-            # CSS emphasis span without verified position, skip it
+            # Orphan span without position or structural role, skip it
             continue
 
         # Fallback to proportional mapping for atomic tags

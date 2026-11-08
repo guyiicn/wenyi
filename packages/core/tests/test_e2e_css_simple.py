@@ -191,6 +191,7 @@ def test_css_span_simple_e2e():
         ranges_1 = target_inline_1.get("ranges", [])
         assert len(ranges_1) == 1
         assert ranges_1[0]["tag"] == "span"
+        assert ranges_1[0].get("css_style") == "italic"
         phrase1 = p1.target[ranges_1[0]["start"]:ranges_1[0]["end"]]
         assert "CSS斜体文本" == phrase1 or "CSS斜体" in phrase1
         

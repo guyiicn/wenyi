@@ -42,6 +42,7 @@ def insert_markdown_emphasis(
         tag = range_info["tag"]
         start = range_info["start"]
         end = range_info["end"]
+        css_style = range_info.get("css_style")
 
         # Validate bounds
         if start < 0 or end > len(result) or start >= end:
@@ -52,8 +53,14 @@ def insert_markdown_emphasis(
             marker = "*"
         elif tag in ("strong", "b"):
             marker = "**"
+        elif tag == "span" and css_style == "italic":
+            # CSS italic span
+            marker = "*"
+        elif tag == "span" and css_style == "bold":
+            # CSS bold span
+            marker = "**"
         else:
-            # Unsupported tag for markdown
+            # Unsupported tag or plain span without CSS styling
             continue
 
         # Insert markers

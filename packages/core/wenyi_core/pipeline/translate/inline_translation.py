@@ -106,13 +106,21 @@ def decode_targets_with_inline(
                     all_warnings.append(f"Segment {idx}: {warning}")
 
             # Store verified target positions
+            # Match ranges with original nodes to preserve css_style
+            range_list = []
+            for range_idx, (start, end, tag) in enumerate(ranges):
+                range_dict = {"start": start, "end": end, "tag": tag}
+                # Find matching original node to get css_style
+                if range_idx < len(original_nodes):
+                    original_node = original_nodes[range_idx]
+                    if original_node.css_style:
+                        range_dict["css_style"] = original_node.css_style
+                range_list.append(range_dict)
+            
             target_inline_meta = {
                 "version": 1,
                 "target_length": len(clean_text),
-                "ranges": [
-                    {"start": start, "end": end, "tag": tag}
-                    for start, end, tag in ranges
-                ],
+                "ranges": range_list,
                 "source_node_count": len(original_nodes),
                 "target_node_count": len(ranges),
                 "validation_warnings": warnings if warnings else [],
