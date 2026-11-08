@@ -14,7 +14,7 @@ from wenyi_core.models.document import Chapter, Segment
 from wenyi_core.models.glossary import GlossaryTerm
 from wenyi_core.pipeline.orchestrator import Orchestrator
 from wenyi_core.storage.file import FileStorage
-from wenyi_core.testing.fake_client import FakeClient
+from wenyi_core.llm.providers.fake import FakeClient
 
 
 def _single_chapter_txt(path: str) -> None:
@@ -46,11 +46,13 @@ class TestGlossaryImportPrompts(unittest.TestCase):
 
             captured_prompts = []
 
-            def capture_handler(messages, tier, json_mode):
-                captured_prompts.append(messages)
-                if "literary translator" in messages[0]["content"]:
-                    return '{"translations": ["原力很强。绝地必将获胜。"]}'
-                return '{"language": "en"}'
+        def capture_handler(messages, tier, json_mode):
+            captured_prompts.append(messages)
+            if "literary translator" in messages[0]["content"]:
+                return '{"translations": ["原力很强。绝地必将获胜。"]}'
+            if "title" in messages[0]["content"].lower() or "title" in messages[-1]["content"].lower():
+                return '{"titles": ["小说"]}'
+            return '{"language": "en"}'
 
             client = FakeClient(handler=capture_handler)
             orch = Orchestrator(config, client=client)
@@ -117,13 +119,15 @@ class TestGlossaryImportPrompts(unittest.TestCase):
 
             captured_prompts = []
 
-            def capture_handler(messages, tier, json_mode):
-                captured_prompts.append(messages)
-                if "literary translator" in messages[0]["content"]:
-                    return '{"translations": ["原力很强。绝地必将获胜。"]}'
-                if "translation reviewer" in messages[0]["content"]:
-                    return '{"issues": []}'
-                return '{"language": "en"}'
+        def capture_handler(messages, tier, json_mode):
+            captured_prompts.append(messages)
+            if "literary translator" in messages[0]["content"]:
+                return '{"translations": ["原力很强。绝地必将获胜。"]}'
+            if "translation reviewer" in messages[0]["content"]:
+                return '{"issues": []}'
+            if "title" in messages[0]["content"].lower() or "title" in messages[-1]["content"].lower():
+                return '{"titles": ["小说"]}'
+            return '{"language": "en"}'
 
             client = FakeClient(handler=capture_handler)
             orch = Orchestrator(config, client=client)
