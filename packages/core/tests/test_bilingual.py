@@ -33,7 +33,7 @@ from tests.sample_data import write_sample_epub, write_sample_txt
 def test_untranslated_ruby_paragraph_keeps_only_original_markup(
     order, preserve_source_style, target
 ):
-    title, segments, template = annotate_epub_resource(
+    title, segments, template, _image_blocks = annotate_epub_resource(
         '<html><body><p id="original" class="body-text">'
         "<ruby>漢字<rt>かんじ</rt></ruby>です</p></body></html>",
         0,
@@ -129,7 +129,7 @@ class TestRenderChapterHtmlBilingual(unittest.TestCase):
         self.assertNotIn("data-tn-id", html)
 
     def test_japanese_source_keeps_ruby_in_bilingual_output(self):
-        title, segments, template = annotate_epub_resource(
+        title, segments, template, _image_blocks = annotate_epub_resource(
             "<html><body><p><ruby>漢字<rt>かんじ</rt></ruby>です</p></body></html>",
             0,
             "chapter.xhtml",
@@ -157,7 +157,7 @@ class TestRenderChapterHtmlBilingual(unittest.TestCase):
         self.assertIn("です", source.get_text())
 
     def test_non_japanese_source_still_flattens_ruby(self):
-        title, segments, template = annotate_epub_resource(
+        title, segments, template, _image_blocks = annotate_epub_resource(
             "<html><body><p><ruby>漢字<rt>かんじ</rt></ruby>です</p></body></html>",
             0,
             "chapter.xhtml",

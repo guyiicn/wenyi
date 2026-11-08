@@ -12,7 +12,7 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, UnicodeDammit
 
-from ..markup.contracts import INLINE_META_KEY
+from ..markup.contracts import INLINE_ID_ATTR, INLINE_META_KEY
 from ..models.document import Segment
 from .export_view import AssembleStore
 from .markdown_inline import insert_markdown_emphasis
@@ -82,31 +82,45 @@ def _extract_segment_images_from_epub(
                         if not isinstance(raw_nodes, list):
                             continue
 
-                        # Find img tags and match with inline IDs from metadata
+                        # Collect all img nodes from metadata
+                        img_nodes = []
                         for node in raw_nodes:
-                            if not isinstance(node, dict):
-                                continue
-                            if node.get("tag") != "img":
-                                continue
-
-                            inline_id = node.get("id")
+                            if isinstance(node, dict) and node.get("tag") == "img":
+                                img_nodes.append(node)
+                        
+                        if not img_nodes:
+                            continue
+                        
+                        # Find all img tags in HTML (in document order)
+                        all_imgs = soup.find_all("img")
+                        
+                        # Match by trying annotated id first, then fall back to positional matching
+                        key = (ch.index, seg.index)
+                        for img_node in img_nodes:
+                            inline_id = img_node.get("id")
                             if not isinstance(inline_id, str):
                                 continue
-
-                            placement = node.get("placement", "after")
-
-                            # Find img in HTML by position/context (since inline_id not in original HTML)
-                            # For now, collect all images in the segment's resource
-                            imgs = soup.find_all("img")
-                            for img in imgs:
+                            placement = img_node.get("placement", "after")
+                            
+                            # Try to find by annotated id attribute
+                            img = soup.find("img", attrs={INLINE_ID_ATTR: inline_id})
+                            
+                            # If not found (original EPUB without annotation), use positional matching
+                            # by extracting all imgs and matching count
+                            if not img and all_imgs:
+                                # Count how many img nodes we've seen so far in metadata
+                                img_index = sum(1 for n in raw_nodes[:raw_nodes.index(img_node)] 
+                                              if isinstance(n, dict) and n.get("tag") == "img")
+                                if img_index < len(all_imgs):
+                                    img = all_imgs[img_index]
+                            
+                            if img:
                                 src = img.get("src", "")
                                 alt = img.get("alt", "")
                                 if src:
                                     normalized_src = _normalize_epub_href(href, str(src))
-                                    key = (ch.index, seg.index)
                                     if key not in segment_images:
                                         segment_images[key] = []
-                                    # Use inline_id from metadata
                                     segment_images[key].append(
                                         (inline_id, normalized_src, str(alt), placement)
                                     )
@@ -230,11 +244,68 @@ def _assemble_plain_text(
             # Extract segment images metadata first
             segment_images = _extract_segment_images_from_epub(source_path, chapters, meta)
 
-            # Collect required image paths
+            # Collect required image paths from segment images and standalone image blocks
             required_images: set[str] = set()
             for images_list in segment_images.values():
                 for _inline_id, norm_src, _alt, _placement in images_list:
                     required_images.add(norm_src)
+            
+            # Also collect from standalone image blocks in chapter metadata
+            for ch in chapters:
+                raw_image_blocks = ch.meta.get("image_blocks")
+                if isinstance(raw_image_blocks, list):
+                    for block in raw_image_blocks:
+                        if isinstance(block, dict):
+                            images = block.get("images")
+                            if isinstance(images, list):
+                                for img_info in images:
+                                    if isinstance(img_info, dict):
+                                        src = img_info.get("src", "")
+                                        if src and ch.segments:
+                                            # Use first segment's resource_href for normalization
+                                            first_href = ch.segments[0].resource_href
+                                            if first_href:
+                                                normalized_src = _normalize_epub_href(first_href, src)
+                                                required_images.add(normalized_src)
+            
+            # Scan all HTML resources for any referenced images (fail-closed validation)
+            epub_resources = meta.get("epub_resources")
+            if isinstance(epub_resources, list):
+                try:
+                    with zipfile.ZipFile(source_path, "r") as zf:
+                        for resource in epub_resources:
+                            if not isinstance(resource, dict):
+                                continue
+                            href = resource.get("href")
+                            if not href:
+                                continue
+                            media_type = resource.get("media_type", "")
+                            # Check media type if present, otherwise assume HTML/XHTML based on extension
+                            is_html = False
+                            if media_type:
+                                is_html = "xhtml" in media_type.lower() or "html" in media_type.lower()
+                            else:
+                                lower_href = href.lower()
+                                is_html = lower_href.endswith(".xhtml") or lower_href.endswith(".html")
+                            if not is_html:
+                                continue
+                            if href not in zf.namelist():
+                                continue
+                            try:
+                                source_data = zf.read(href)
+                                html = UnicodeDammit(source_data).unicode_markup
+                                if html is None:
+                                    html = source_data.decode("utf-8", errors="replace")
+                                soup = BeautifulSoup(html, "html.parser")
+                                for img in soup.find_all("img"):
+                                    src = img.get("src", "")
+                                    if src:
+                                        normalized_src = _normalize_epub_href(href, str(src))
+                                        required_images.add(normalized_src)
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
 
             # Extract image files with validation
             image_map = _extract_images_from_epub(source_path, assets_dir, required_images)
@@ -280,14 +351,15 @@ def _assemble_plain_text(
             # Get images for this segment
             seg_images = segment_images.get((ch.index, seg.index), [])
 
-            # Separate placement types: before/after (block-level) vs inline
+            # Separate placement types: before/after/block (block-level) vs inline
             before_images = []
             after_images = []
             inline_images = []
             for inline_id, norm_src, alt, placement in seg_images:
                 if placement == "inline":
                     inline_images.append((inline_id, norm_src, alt, placement))
-                elif placement == "before":
+                elif placement == "before" or placement == "block":
+                    # "block" is treated as "before" for compatibility
                     before_images.append((inline_id, norm_src, alt, placement))
                 elif placement == "after":
                     after_images.append((inline_id, norm_src, alt, placement))
