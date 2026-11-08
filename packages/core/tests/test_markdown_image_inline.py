@@ -63,39 +63,42 @@ class TestImageExtraction:
     def _create_test_epub(self, tmp_path: Path) -> Path:
         """Create a minimal EPUB with images."""
         epub_path = tmp_path / "test.epub"
-        
-        with zipfile.ZipFile(epub_path, 'w') as zf:
+
+        with zipfile.ZipFile(epub_path, "w") as zf:
             # Add mimetype
             zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
-            
+
             # Add container.xml
-            zf.writestr("META-INF/container.xml", """<?xml version="1.0"?>
+            zf.writestr(
+                "META-INF/container.xml",
+                """<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
     <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
   </rootfiles>
-</container>""")
-            
+</container>""",
+            )
+
             # Add images
             zf.writestr("OEBPS/images/cover.jpg", b"fake_jpg_data")
             zf.writestr("OEBPS/images/diagram.png", b"fake_png_data")
             zf.writestr("OEBPS/styles/style.css", "body { margin: 0; }")
-        
+
         return epub_path
 
     def test_extract_images(self, tmp_path):
         """Test basic image extraction."""
         epub_path = self._create_test_epub(tmp_path)
         assets_dir = tmp_path / "assets"
-        
+
         image_map = _extract_images_from_epub(str(epub_path), str(assets_dir))
-        
+
         assert len(image_map) == 2
         assert "OEBPS/images/cover.jpg" in image_map
         assert "OEBPS/images/diagram.png" in image_map
         assert image_map["OEBPS/images/cover.jpg"] == "assets/cover.jpg"
         assert image_map["OEBPS/images/diagram.png"] == "assets/diagram.png"
-        
+
         # Verify files exist
         assert (assets_dir / "cover.jpg").exists()
         assert (assets_dir / "diagram.png").exists()
@@ -108,18 +111,18 @@ class TestImageExtraction:
     def test_duplicate_image_names(self, tmp_path):
         """Test handling of duplicate image names in different directories."""
         epub_path = tmp_path / "test.epub"
-        
-        with zipfile.ZipFile(epub_path, 'w') as zf:
+
+        with zipfile.ZipFile(epub_path, "w") as zf:
             zf.writestr("mimetype", "application/epub+zip")
             zf.writestr("images/img.jpg", b"data1")
             zf.writestr("other/img.jpg", b"data2")
-        
+
         assets_dir = tmp_path / "assets"
         image_map = _extract_images_from_epub(str(epub_path), str(assets_dir))
-        
+
         assert len(image_map) == 2
         assert len(set(image_map.values())) == 2  # Both mapped to different names
-        
+
         # Check files exist and have correct content
         extracted_files = list((assets_dir).glob("*.jpg"))
         assert len(extracted_files) == 2
@@ -131,19 +134,17 @@ class TestInlineMarkers:
     def test_simple_italic(self):
         """Test encoding and decoding simple italic."""
         text = "The Force is strong"
-        nodes = [
-            {"tag": "i", "offset": 4, "placement": "inline", "id": "test_0"}
-        ]
-        
+        nodes = [{"tag": "i", "offset": 4, "placement": "inline", "id": "test_0"}]
+
         encoded, inline_nodes = encode_inline_markers(text, nodes, len(text))
-        
+
         assert "[[I_START]]" in encoded
         assert "[[I_END]]" in encoded
         assert len(inline_nodes) == 1
-        
+
         # Decode
         decoded, ranges, warnings = decode_inline_markers(encoded, inline_nodes)
-        
+
         assert decoded == text
         assert len(ranges) == 1
         assert ranges[0][2] == "i"
@@ -156,9 +157,9 @@ class TestInlineMarkers:
             {"tag": "em", "offset": 8, "placement": "inline", "id": "em_0"},
             {"tag": "strong", "offset": 13, "placement": "inline", "id": "strong_0"},
         ]
-        
+
         encoded, inline_nodes = encode_inline_markers(text, nodes, len(text))
-        
+
         assert "[[EM_START]]" in encoded
         assert "[[STRONG_START]]" in encoded
         assert len(inline_nodes) == 2
@@ -167,9 +168,9 @@ class TestInlineMarkers:
         """Test detection of missing end marker."""
         original_nodes = [InlineNode(tag="i", start=0, end=5, marker_name="I")]
         translated = "Text with [[I_START]] but no end"
-        
+
         decoded, ranges, warnings = decode_inline_markers(translated, original_nodes)
-        
+
         assert len(warnings) > 0
         assert any("Unclosed" in w for w in warnings)
 
@@ -180,9 +181,9 @@ class TestInlineMarkers:
             InlineNode(tag="strong", start=6, end=12, marker_name="STRONG"),
         ]
         translated = "Text [[I_START]] italic [[STRONG_END]] [[STRONG_START]] bold [[I_END]]"
-        
+
         decoded, ranges, warnings = decode_inline_markers(translated, original_nodes)
-        
+
         assert len(warnings) > 0
         assert any("Mismatched" in w or "Unmatched" in w for w in warnings)
 
@@ -194,9 +195,9 @@ class TestInlineMarkers:
         ]
         # Translation has only one pair
         translated = "Text [[I_START]]italic[[I_END]]"
-        
+
         decoded, ranges, warnings = decode_inline_markers(translated, original_nodes)
-        
+
         assert len(warnings) > 0
         assert any("count mismatch" in w.lower() for w in warnings)
 
@@ -214,17 +215,15 @@ class TestInlineDetection:
                 "epub_inline": {
                     "version": 1,
                     "source_length": 9,
-                    "nodes": [
-                        {"tag": "i", "offset": 4, "placement": "inline"}
-                    ]
+                    "nodes": [{"tag": "i", "offset": 4, "placement": "inline"}],
                 }
-            }
+            },
         )
-        
+
         ch = Chapter(index=0, title="Test", segments=[seg])
-        
+
         issues = detect_unpreservable_inline([ch])
-        
+
         assert 0 in issues
         assert len(issues[0]) == 1
         assert issues[0][0]["reason"] == "untranslated"
@@ -240,17 +239,15 @@ class TestInlineDetection:
                 "epub_inline": {
                     "version": 1,
                     "source_length": 9,
-                    "nodes": [
-                        {"tag": "i", "offset": 4, "placement": "inline"}
-                    ]
+                    "nodes": [{"tag": "i", "offset": 4, "placement": "inline"}],
                 }
-            }
+            },
         )
-        
+
         ch = Chapter(index=0, title="Test", segments=[seg])
-        
+
         issues = detect_unpreservable_inline([ch])
-        
+
         assert 0 in issues
         assert len(issues[0]) == 1
         assert issues[0][0]["reason"] == "proportional_mapping_unreliable"
@@ -259,9 +256,9 @@ class TestInlineDetection:
         """Test chapters without inline markup issues."""
         seg = Segment(index=0, source="Plain text", target="纯文本", meta={})
         ch = Chapter(index=0, title="Test", segments=[seg])
-        
+
         issues = detect_unpreservable_inline([ch])
-        
+
         assert len(issues) == 0
 
     def test_format_report(self):
@@ -274,19 +271,16 @@ class TestInlineDetection:
                 "epub_inline": {
                     "version": 1,
                     "source_length": 33,
-                    "nodes": [
-                        {"tag": "i", "id": "inline_0"},
-                        {"tag": "strong", "id": "inline_1"}
-                    ]
+                    "nodes": [{"tag": "i", "id": "inline_0"}, {"tag": "strong", "id": "inline_1"}],
                 }
-            }
+            },
         )
-        
+
         ch = Chapter(index=2, title="Test", segments=[seg])
-        
+
         issues = detect_unpreservable_inline([ch])
         report = format_inline_report(issues)
-        
+
         assert "Chapter 2" in report
         assert "Segment 5" in report
         assert "2 inline nodes" in report

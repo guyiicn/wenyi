@@ -1144,7 +1144,8 @@ data-tn-annotation-id="ann-0" href="chapter.xhtml#part">Chapter
 
             persisted = store.load_chapter(0)
             inline_segments = [s for s in persisted.segments if "epub_inline" in s.meta]
-            self.assertEqual(inline_segments, [])
+            # Inline metadata is now preserved for semantic emphasis restoration
+            self.assertGreater(len(inline_segments), 0)
 
             output = assemble(store, epub, out_format="epub", about_page=False)
             with zipfile.ZipFile(output) as archive:
