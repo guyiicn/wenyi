@@ -265,8 +265,15 @@ Token 总量跨续跑累计，不仅属于上次调用。缓存读取率为已�
 ```bash
 wenyi glossary list book.epub
 wenyi glossary conflicts book.epub
-wenyi glossary resolve book.epub "source term" "chosen translation"
+wenyi glossary resolve book.epub "原文术语" "选择译名"
+wenyi glossary import book.epub --file terms.tsv
 ```
+
+`import` 在翻译前从 TSV 文件导入外部术语。TSV 须含表头行，至少包含源文和目标列
+（默认列名：`english` 和 `preferred_zh_cn`）。可选列包括 `type`、
+`aliases_and_regional`（管道符分隔）、`usage_conflicts`（注释）和 `status`
+（`verified`/`provisional`）。重复源文条目将被拒绝；与现有译名冲突的条目会被记录但不会静默覆盖。
+使用 `--dry-run` 预览而不写入变更。运行 `wenyi glossary import --help` 查看列映射选项。
 
 `resolve` 修改**已有**词条的权威译名并关闭冲突，不是术语导入或全书查找替换命令。
 后续翻译和 Review 可以使用该选择；已完成段落仍需结合导出文本与 Review 结果检查。
@@ -353,6 +360,7 @@ BabelDOC PDF 导出仍需请求外部 bridge。
 | `glossary list` | `INPUT` | 已有术语与状态。 |
 | `glossary conflicts` | `INPUT` | 未解决术语冲突。 |
 | `glossary resolve` | `INPUT SOURCE TARGET` | 裁定已有词条。 |
+| `glossary import` | `INPUT`, `--file TSV`, `--dry-run` | 翻译前导入外部术语。 |
 | `languages` | 无选项 | 无需凭据，列出内置语言代码。 |
 | `models` | [下方子命令](#model-commands) | 路由、检查、真实探测和迁移。 |
 | `language-policy` | 开发诊断 | 见[语言策略诊断](../development/pipeline.md#language-policies)，不是翻译设置。 |

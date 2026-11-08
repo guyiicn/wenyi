@@ -305,10 +305,19 @@ prevent the current duration from being saved.
 wenyi glossary list book.epub
 wenyi glossary conflicts book.epub
 wenyi glossary resolve book.epub "source term" "chosen translation"
+wenyi glossary import book.epub --file terms.tsv
 ```
 
+`import` loads external glossary terms from a TSV file before translation. The
+TSV must have a header row with at minimum source and target columns (defaults:
+`english` and `preferred_zh_cn`). Optional columns include `type`, `aliases_and_regional`
+(pipe-separated), `usage_conflicts` (notes), and `status` (`verified`/`provisional`).
+Duplicate source entries are rejected; conflicts with existing translations are
+recorded but not silently overwritten. Use `--dry-run` to preview without changes.
+Run `wenyi glossary import --help` for column mapping options.
+
 `resolve` changes an **existing** term's authoritative translation and closes its
-conflicts; it is not a glossary import or a whole-book search-and-replace command.
+conflicts; it operates on terms already in the glossary, not the original TSV.
 The selection is available to subsequent translation and Review. Inspect the
 exported text and Review results for already completed passages.
 There is no standalone `polish` command: polishing runs within translation, and
@@ -406,6 +415,7 @@ for the installed version's syntax.
 | `glossary list` | `INPUT` | Established terms and status. |
 | `glossary conflicts` | `INPUT` | Unresolved terminology conflicts. |
 | `glossary resolve` | `INPUT SOURCE TARGET` | Resolve an existing term. |
+| `glossary import` | `INPUT`, `--file TSV`, `--dry-run` | Import external glossary before translation. |
 | `languages` | No options | List built-in language codes without credentials. |
 | `models` | [Subcommands below](#model-commands) | Routing, checks, live probes, and migrations. |
 | `language-policy` | Developer diagnostic | See [language-policy diagnostics](../development/pipeline.md#language-policies), not translation settings. |
