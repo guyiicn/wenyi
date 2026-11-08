@@ -32,6 +32,8 @@ def test_application_timeout_fires_on_stalled_connection():
     Regression test for stalled synopsis.chapter calls: ESTABLISHED HTTPS connection
     with no response body should become a retryable timeout, not hang indefinitely.
     """
+    import threading
+    
     # Use very short timeout for test speed
     cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=2.0)
     client = FakeClient(cfg)
@@ -43,10 +45,12 @@ def test_application_timeout_fires_on_stalled_connection():
     
     # Simulate stalled connection: create() hangs for longer than timeout
     def slow_create(**kwargs):
-        time.sleep(5.0)  # Hang longer than timeout
+        time.sleep(10.0)  # Hang much longer than timeout
         raise AssertionError("Should not reach here - timeout should fire first")
     
     mock_completions.create = slow_create
+    
+    threads_before = threading.active_count()
     
     with patch.object(client, '_ensure_client', return_value=mock_sdk_client):
         messages = [{"role": "user", "content": "test"}]
@@ -63,6 +67,13 @@ def test_application_timeout_fires_on_stalled_connection():
         # Should raise TimeoutError, not hang
         with pytest.raises(TimeoutError, match="exceeded application timeout"):
             client._request(messages, model, json_mode=False, context=context)
+    
+    # Verify daemon thread doesn't block (test should complete quickly, not wait 10s)
+    # Allow small grace period for thread cleanup
+    time.sleep(0.5)
+    threads_after = threading.active_count()
+    # May have one daemon thread still running, that's OK (it won't block exit)
+    assert threads_after <= threads_before + 1, f"Thread leak: {threads_before} -> {threads_after}"
 
 
 def test_application_timeout_allows_slow_but_progressing_requests():
@@ -106,6 +117,55 @@ def test_application_timeout_allows_slow_but_progressing_requests():
         assert result == "test response"
 
 
+def test_application_timeout_fires_on_trickle_response():
+    """Application timeout should fire when server sends slow trickle response.
+    
+    Critical regression: server returns 200 headers then 1 byte/second trickle.
+    Each byte arrives within httpx read timeout, so httpx doesn't fire.
+    Application timeout must enforce total wall-clock deadline.
+    """
+    import threading
+    
+    # Use very short timeout for test speed
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=1.0)
+    client = FakeClient(cfg)
+    
+    mock_sdk_client = Mock()
+    mock_completions = Mock()
+    mock_sdk_client.chat.completions = mock_completions
+    
+    # Simulate trickle response: send bytes slowly but continuously
+    def trickle_create(**kwargs):
+        # Sleep in small increments, simulating trickle (1 byte every 0.3s)
+        for _ in range(10):  # Would take 3 seconds total
+            time.sleep(0.3)
+        raise AssertionError("Should not reach here - timeout should fire first")
+    
+    mock_completions.create = trickle_create
+    
+    with patch.object(client, '_ensure_client', return_value=mock_sdk_client):
+        messages = [{"role": "user", "content": "test"}]
+        model = ResolvedModel(model="test-model", options=FakeOptions())
+        context = RequestContext(
+            operation="synopsis.chapter",
+            tier="fast",
+            max_tokens=1000,
+            emit=Mock(),
+            record_usage=Mock(),
+            attempt_scope=Mock(),
+        )
+        
+        start = time.time()
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(messages, model, json_mode=False, context=context)
+        elapsed = time.time() - start
+        
+        # Verify timeout fired around configured timeout (1.0s * 1.1 = 1.1s)
+        # Not after full trickle duration (3s)
+        assert elapsed < 2.0, f"Timeout took too long: {elapsed:.2f}s (expected ~1.1s)"
+        assert elapsed > 1.0, f"Timeout fired too early: {elapsed:.2f}s (expected ~1.1s)"
+
+
 def test_timeout_error_is_retryable():
     """TimeoutError from application timeout should be classified as retryable.
     
@@ -117,6 +177,47 @@ def test_timeout_error_is_retryable():
     reason = retry_reason(error)
     
     assert reason == "timeout", f"Expected 'timeout', got {reason!r}"
+
+
+def test_daemon_thread_allows_process_exit():
+    """Daemon threads from stalled requests must not block process exit.
+    
+    Critical: after timeout, daemon thread continues in background but doesn't
+    prevent main thread from continuing or process from exiting cleanly.
+    """
+    import threading
+    
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=0.5)
+    client = FakeClient(cfg)
+    
+    mock_sdk_client = Mock()
+    mock_completions = Mock()
+    mock_sdk_client.chat.completions = mock_completions
+    
+    # Simulate long-running request that never completes
+    def infinite_request(**kwargs):
+        time.sleep(3600)  # Sleep for 1 hour
+    
+    mock_completions.create = infinite_request
+    
+    with patch.object(client, '_ensure_client', return_value=mock_sdk_client):
+        messages = [{"role": "user", "content": "test"}]
+        model = ResolvedModel(model="test-model", options=FakeOptions())
+        context = RequestContext(
+            operation="synopsis.chapter",
+            tier="fast",
+            max_tokens=1000,
+            emit=Mock(),
+            record_usage=Mock(),
+            attempt_scope=Mock(),
+        )
+        
+        # Timeout should fire quickly
+        with pytest.raises(TimeoutError):
+            client._request(messages, model, json_mode=False, context=context)
+        
+        # Main thread continues immediately (daemon thread still running in background)
+        # Test completes without waiting for daemon thread
 
 
 def test_httpx_timeout_configuration():
