@@ -298,7 +298,7 @@ def _track_import_metadata(
 
 
 def import_glossary(
-    store: Storage,
+    store: Storage | None,
     file_path: Path,
     *,
     input_path: str,
@@ -316,34 +316,32 @@ def import_glossary(
     
     For fresh projects without manifest, creates minimal state to enable import before
     AI preparation. This allows importing frozen terminology before any model calls.
+    
+    Dry-run mode performs pure validation without creating any directories or files.
     """
-    # Import is allowed even without existing state - we'll initialize if needed
-    # This enables the workflow: import first, then prepare/translate with seeded glossary
-
     file_hash = _compute_file_hash(file_path)
-
-    # For fresh projects, ensure minimal manifest exists before import
-    # This allows importing glossary before any AI preparation or model calls
-    if not store.exists():
-        if dry_run:
-            console.print(
-                "[yellow]Dry-run on fresh project (no state yet). "
-                "Actual import will initialize minimal state.[/]"
-            )
-        else:
-            console.print("Initializing fresh project for glossary import...")
-            _initialize_minimal_state(store, input_path, config)
-
-    # Check idempotency
-    import_key = f"glossary/imports/{file_hash}.json"
-    previous_import = store.read_artifact(import_key)
-    if isinstance(previous_import, dict) and not dry_run:
+    
+    # Check if this is a fresh project
+    is_fresh = store is None or not store.exists()
+    
+    if is_fresh and dry_run:
+        # Pure validation mode: no store creation, no filesystem writes
         console.print(
-            f"[yellow]This file (SHA256: {file_hash[:16]}...) was previously imported.[/]"
+            "[yellow]Dry-run on fresh project (no state yet). "
+            "Validating TSV without creating any files...[/]"
         )
-        console.print("Re-importing to handle any new conflicts or changes...")
+        store = None  # Ensure no store operations
+    elif is_fresh and not dry_run:
+        # Actual import on fresh project: initialize minimal state
+        console.print("Initializing fresh project for glossary import...")
+        if store is None:
+            raise ImportError("Cannot initialize without store object")
+        _initialize_minimal_state(store, input_path, config)
+    elif not is_fresh and dry_run:
+        # Existing project dry-run: validate without writes
+        pass  # Store exists, will be used read-only
 
-    # Load and parse TSV
+    # Load and parse TSV (always needed for validation)
     records = _load_tsv_records(
         file_path, source_col=source_col, target_col=target_col, console=console
     )
@@ -364,6 +362,25 @@ def import_glossary(
 
     # Validate collisions
     _validate_collision_strategy(terms, console=console)
+
+    # For fresh project dry-run, stop here (no store operations)
+    if is_fresh and dry_run:
+        # Pure memory preview: count what would be inserted
+        results = {"inserted": len(terms), "unchanged": 0, "conflict": 0, "skipped": 0}
+        return results
+
+    # From here on, we need a valid store
+    if store is None:
+        raise ImportError("Store is required for non-dry-run operations")
+
+    # Check idempotency
+    import_key = f"glossary/imports/{file_hash}.json"
+    previous_import = store.read_artifact(import_key)
+    if isinstance(previous_import, dict) and not dry_run:
+        console.print(
+            f"[yellow]This file (SHA256: {file_hash[:16]}...) was previously imported.[/]"
+        )
+        console.print("Re-importing to handle any new conflicts or changes...")
 
     # Execute import
     results = _execute_import(store, terms, dry_run=dry_run, console=console)
@@ -418,7 +435,20 @@ def register_import_command(app: typer.Typer, context) -> None:
 
         try:
             config = context().load_config()
-            store = runstore_for_cli(config, input, console=console, allow_missing=True)
+            
+            # For dry-run on potentially fresh project, don't create store yet
+            # Only create store for actual import or existing project dry-run
+            store = None
+            if not dry_run:
+                # Actual import: need store
+                store = runstore_for_cli(config, input, console=console, allow_missing=True)
+            else:
+                # Dry-run: check if state exists without creating it
+                try:
+                    store = runstore_for_cli(config, input, console=console, allow_missing=False)
+                except:
+                    # Fresh project: pure validation, no store needed
+                    store = None
 
             results = import_glossary(
                 store,
