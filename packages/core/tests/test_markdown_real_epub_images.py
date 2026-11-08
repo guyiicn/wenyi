@@ -233,9 +233,9 @@ def test_real_epub_block_images_only():
 <head><title>Test Chapter</title></head>
 <body>
   <h1>Test Chapter</h1>
-  <img src="images/figure1.png" alt="Figure 1"/>
+  <div><img src="images/figure1.png" alt="Figure 1"/></div>
   <p>Paragraph one.</p>
-  <img src="images/figure2.png" alt="Figure 2"/>
+  <div><img src="images/figure2.png" alt="Figure 2"/></div>
   <p>Paragraph two.</p>
 </body>
 </html>""",
