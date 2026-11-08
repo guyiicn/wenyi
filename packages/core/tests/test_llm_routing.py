@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from wenyi_core.config import Config
@@ -172,16 +173,37 @@ def test_native_and_compatible_adapters_can_run_together():
             ),
         )
 
-    client.adapter("default")._client = NS(chat=NS(completions=NS(create=compatible)))
-    client.adapter("native")._client = NS(models=NS(generate_content=native))
-    with ThreadPoolExecutor(2) as pool:
-        first = pool.submit(
-            client.complete, [{"role": "user", "content": "source"}], operation="translation.body"
-        )
-        second = pool.submit(
-            client.complete, [{"role": "user", "content": "draft"}], operation="polish.body"
-        )
-        assert (first.result(), second.result()) == ("translation", "polished")
+    # v1246: Create mock clients with close()
+    compatible_mock = NS(
+        chat=NS(completions=NS(create=compatible)),
+        close=lambda: None,
+    )
+    native_mock = NS(
+        models=NS(generate_content=native),
+        close=lambda: None,
+    )
+    
+    # Set credentials
+    client.adapter("default")._credentials = ("test-key",)
+    client.adapter("native")._credentials = ("test-key",)
+    
+    # v1246: Patch both OpenAI and Gemini constructors
+    # OpenAI for default (deepseek), Gemini for native
+    try:
+        import google.generativeai  # noqa: F401
+    except ImportError:
+        pytest.skip("google.generativeai not installed")
+    
+    with patch('openai.OpenAI', return_value=compatible_mock), \
+         patch('google.generativeai.GenerativeModel', return_value=native_mock):
+        with ThreadPoolExecutor(2) as pool:
+            first = pool.submit(
+                client.complete, [{"role": "user", "content": "source"}], operation="translation.body"
+            )
+            second = pool.submit(
+                client.complete, [{"role": "user", "content": "draft"}], operation="polish.body"
+            )
+            assert (first.result(), second.result()) == ("translation", "polished")
     assert requests["compatible"]["model"] == "deepseek-flash"
     assert requests["native"]["model"] == "native-editor"
     assert requests["native"]["config"]["max_output_tokens"] == 2000
@@ -359,12 +381,30 @@ def test_workflow_wire_limits_match_profile_or_provider_defaults(kind, explicit)
             candidates=[SimpleNamespace(finish_reason="STOP")],
         )
 
-    client.adapter("remote")._client = SimpleNamespace(
+    # v1246: Create mock client with close() and patch constructors
+    mock_client = SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=request)),
         models=SimpleNamespace(generate_content=request),
+        close=lambda: None,
     )
-    for operation in ("synopsis.chapter", "synopsis.book", "annotation.align"):
-        assert client.complete([{"role": "user", "content": "source"}], operation=operation) == "ok"
+    client.adapter("remote")._credentials = ("test-key",)
+    
+    # Use appropriate patch based on kind
+    # For most providers, patch OpenAI constructor
+    # For gemini, we need to handle it specially since google.generativeai may not be installed
+    if kind == 'gemini':
+        # Gemini uses different API, skip if google.generativeai not available
+        try:
+            import google.generativeai  # noqa: F401
+            patch_target = 'google.generativeai.GenerativeModel'
+        except ImportError:
+            pytest.skip("google.generativeai not installed")
+    else:
+        patch_target = 'openai.OpenAI'
+    
+    with patch(patch_target, return_value=mock_client):
+        for operation in ("synopsis.chapter", "synopsis.book", "annotation.align"):
+            assert client.complete([{"role": "user", "content": "source"}], operation=operation) == "ok"
     assert len(requests) == 3
     for kwargs in requests:
         payload = kwargs["config"] if kind == "gemini" else kwargs
