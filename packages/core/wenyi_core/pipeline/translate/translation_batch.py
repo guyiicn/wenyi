@@ -155,47 +155,49 @@ class TranslationBatchExecutor:
 
             has_inline = any(nodes is not None for nodes in inline_nodes_per_target)
 
-            # Add inline preservation suffix to polisher prompt if needed
-            if has_inline:
-                # Monkey-patch polisher to add suffix
-                original_render = self._polisher.render
-
-                def render_with_suffix(template_name, **kwargs):
-                    result = original_render(template_name, **kwargs)
-                    if template_name in ("polisher_user", "polisher_continue_user"):
-                        result += inline_preservation_prompt_suffix()
-                    return result
-
-                self._polisher.render = render_with_suffix
-
+            # Polish with inline preservation if needed
             turn = self._translator.last_batch_turn
             indices = self._translator.last_batch_indices
             polished: list[str] | None = None
 
-            if turn is not None and indices is not None:
-                # Continue with encoded targets (keep markers for decode)
-                continued = self._polisher.polish_continue(
-                    turn,
-                    n=len(indices),
-                    next_source=plan.next_source,
-                )
-                if continued is not None and len(continued) == len(indices):
-                    polished = list(encoded_targets)
-                    for index, text in zip(indices, continued):
-                        polished[index] = text  # Keep markers, will decode later
+            # Monkey-patch polisher render safely with try/finally
+            original_render = self._polisher.render if has_inline else None
 
-            if polished is None:
-                polished = self._polisher.polish(
-                    encoded_targets,
-                    glossary_terms=terms,
-                    style=plan.style,
-                    next_source=plan.next_source,
-                    sources=list(plan.sources),
-                )
+            try:
+                if has_inline:
 
-            # Restore original render
-            if has_inline:
-                self._polisher.render = original_render
+                    def render_with_suffix(template_name, **kwargs):
+                        result = original_render(template_name, **kwargs)
+                        if template_name in ("polisher_user", "polisher_continue_user"):
+                            result += inline_preservation_prompt_suffix()
+                        return result
+
+                    self._polisher.render = render_with_suffix
+
+                if turn is not None and indices is not None:
+                    # Continue with encoded targets (keep markers for decode)
+                    continued = self._polisher.polish_continue(
+                        turn,
+                        n=len(indices),
+                        next_source=plan.next_source,
+                    )
+                    if continued is not None and len(continued) == len(indices):
+                        polished = list(encoded_targets)
+                        for index, text in zip(indices, continued):
+                            polished[index] = text  # Keep markers, will decode later
+
+                if polished is None:
+                    polished = self._polisher.polish(
+                        encoded_targets,
+                        glossary_terms=terms,
+                        style=plan.style,
+                        next_source=plan.next_source,
+                        sources=list(plan.sources),
+                    )
+            finally:
+                # Always restore original render to prevent pollution across batches
+                if original_render is not None:
+                    self._polisher.render = original_render
 
             # Decode inline markers from polished text
             if len(polished) == len(targets):
