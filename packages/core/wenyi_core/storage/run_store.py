@@ -28,7 +28,6 @@ from threading import local
 from typing import Any
 
 from ..i18n.languages import require_language
-from ..ingest.source_hash import source_sha256
 from ..models.document import Chapter, Document
 from ..timing import save_timing
 from .artifacts import FileArtifacts
@@ -46,6 +45,13 @@ from .names import DEFAULT_COMPONENT, escape_reserved, strip_trailing
 
 STATUS_PENDING = "pending"
 STATUS_DONE = "done"
+
+
+def source_sha256(path: str) -> str:
+    """Hash source identity; ingest is imported only when a file is hashed."""
+    from ..ingest.source_hash import source_sha256 as hash_source_file
+
+    return hash_source_file(path)
 
 
 def slugify(name: str) -> str:

@@ -4,10 +4,10 @@ import json
 import logging
 import traceback
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import httpx
 import pytest
-from unittest.mock import patch
 from openai import APIStatusError
 from wenyi_core.llm.configuration import LLMConfig
 from wenyi_core.llm.limits import RequestCancelled, RequestStopped
@@ -53,7 +53,7 @@ def client_with_failure(*, credentials=True, status=503, other_secret=None):
         chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
         close=lambda: None,  # Noop close for v1246
     )
-    
+
     # Return client and calls list, caller must patch OpenAI constructor
     return client, calls, mock_client
 
@@ -62,15 +62,17 @@ def client_with_failure(*, credentials=True, status=503, other_secret=None):
     "status, attempts, resumable", [(401, 1, False), (402, 1, True), (503, 2, True)]
 )
 def test_final_provider_failure_and_retry_diagnostics_are_safe(caplog, status, attempts, resumable):
-    client, calls, mock_client = client_with_failure(status=status, other_secret="fake-other-connection-key")
+    client, calls, mock_client = client_with_failure(
+        status=status, other_secret="fake-other-connection-key"
+    )
     events = []
     client.set_event_sink(lambda event, **data: events.append((event, data)))
-    
+
     # v1246: Patch OpenAI constructor for isolated client per request
-    with patch('openai.OpenAI', return_value=mock_client):
+    with patch("openai.OpenAI", return_value=mock_client):
         with pytest.raises(Exception) as caught:
             client.complete([{"role": "user", "content": "Hello"}], operation="review.verify")
-    
+
     logging.getLogger(__name__).error(
         "Worker failed", exc_info=(type(caught.value), caught.value, caught.tb)
     )
@@ -97,9 +99,10 @@ def test_credential_validation_remains_actionable():
         missing.validate_credentials()
 
 
-def test_without_snapshot_keeps_original_exception():
+def test_without_snapshot_keeps_original_exception(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", SECRET)
     client, calls, mock_client = client_with_failure(credentials=False, status=401)
-    # v1246: Patch OpenAI constructor
+    # Isolated clients still validate env credentials; without a snapshot the SDK error is kept.
     with patch("openai.OpenAI", return_value=mock_client):
         with pytest.raises(APIStatusError, match=SECRET):
             client.complete([], operation="translation.body")
@@ -113,12 +116,12 @@ def test_failed_event_sink_cannot_log_provider_context(caplog):
         raise RuntimeError(f"Sink failed with {SECRET}")
 
     client.set_event_sink(sink)
-    
+
     # v1246: Patch OpenAI constructor
-    with patch('openai.OpenAI', return_value=mock_client):
+    with patch("openai.OpenAI", return_value=mock_client):
         with pytest.raises(ProviderRequestError):
             client.complete([], operation="translation.body")
-    
+
     assert len(calls) == 2
     assert "Failed to write LLM event" in caplog.text
     assert SECRET not in caplog.text
@@ -134,10 +137,10 @@ def test_observer_cannot_log_provider_context(caplog, method):
         raise RuntimeError(f"Observer failed with {SECRET}")
 
     # v1246: Patch OpenAI constructor
-    with patch('openai.OpenAI', return_value=mock_client):
+    with patch("openai.OpenAI", return_value=mock_client):
         with getattr(client, method)(observer), pytest.raises(ProviderRequestError):
             client.complete([], operation="translation.body")
-    
+
     assert len(calls) == 2
     assert "Failed to write LLM event" in caplog.text
     assert SECRET not in caplog.text
@@ -160,12 +163,12 @@ def test_control_flow_errors_are_preserved(stop_type):
         chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
         close=lambda: None,
     )
-    
+
     # v1246: Patch OpenAI constructor
-    with patch('openai.OpenAI', return_value=stop_mock_client):
+    with patch("openai.OpenAI", return_value=stop_mock_client):
         with pytest.raises(stop_type) as caught:
             client.complete([], operation="translation.body")
-    
+
     assert caught.value is stop
 
 
@@ -190,12 +193,12 @@ def test_safe_error_preserves_workflow_classification(error, resumable, truncate
         chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
         close=lambda: None,
     )
-    
+
     # v1246: Patch OpenAI constructor
-    with patch('openai.OpenAI', return_value=error_mock_client):
+    with patch("openai.OpenAI", return_value=error_mock_client):
         with pytest.raises(ProviderRequestError) as caught:
             client.complete([], operation="translation.body")
-    
+
     assert is_resumable_provider_interrupt(caught.value) is resumable
     assert isinstance(caught.value, TruncatedResponseError) is truncated
     assert SECRET not in str(caught.value)
@@ -215,7 +218,9 @@ def test_fallback_still_sees_original_provider_classification():
     def create(**kwargs):
         assert kwargs["messages"] == messages
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=SECRET), finish_reason="stop")],
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content=SECRET), finish_reason="stop")
+            ],
             usage=None,
         )
 
@@ -224,21 +229,22 @@ def test_fallback_still_sees_original_provider_classification():
         chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
         close=lambda: None,
     )
-    
+
     # v1246: Patch OpenAI constructor - will be called for both providers
     # First call returns mock_client (fails), second call returns fallback (succeeds)
     call_count = [0]
+
     def mock_openai_constructor(*args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
             return mock_client  # First provider fails
         else:
             return fallback_mock_client  # Fallback succeeds
-    
-    with patch('openai.OpenAI', side_effect=mock_openai_constructor):
+
+    with patch("openai.OpenAI", side_effect=mock_openai_constructor):
         result = routed.complete(messages, operation="translation.body")
         assert result == SECRET
-    
+
     # First provider retries (max_retries=1), so 1 initial + 1 retry = 2 calls
     # v1246: Verify at least 1 call to first provider before fallback
     assert len(calls) >= 1, f"Expected at least 1 call, got {len(calls)}"
@@ -258,12 +264,12 @@ def test_review_persists_only_safe_errors(tmp_path, caplog):
     config.pipeline.review_autofix = False
     store = _store(str(tmp_path))
     orch = Orchestrator(config, client)
-    
+
     # v1246: Patch OpenAI constructor
-    with patch('openai.OpenAI', return_value=mock_client):
+    with patch("openai.OpenAI", return_value=mock_client):
         with pytest.raises(ProviderRequestError):
             orch._review.run_session(store, [])
-    
+
     assert len(calls) == 2
     artifacts = [path for path in tmp_path.rglob("*.json") if "review" in str(path)]
     assert artifacts

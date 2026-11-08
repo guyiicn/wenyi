@@ -19,7 +19,6 @@ from wenyi_core.llm.connectivity import (
     probe_profiles,
     probe_targets,
 )
-from wenyi_core.llm.providers._openai_compatible import OpenAICompatibleBaseClient
 from wenyi_core.llm.router import RoutedLLMClient
 
 SECRET = "fake-probe-secret-not-a-real-key"
@@ -88,12 +87,18 @@ def sdk(monkeypatch, request):
             raise behavior
         return behavior
 
-    def ensure(self):
-        clients.append({"timeout": self.cfg.timeout, "max_retries": self.cfg.max_retries})
-        self.validate_credentials()
-        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    def mock_openai_constructor(**kwargs):
+        timeout_val = kwargs.get("timeout")
+        if isinstance(timeout_val, httpx.Timeout):
+            timeout_val = timeout_val.read
+        clients.append({"timeout": timeout_val, "max_retries": kwargs.get("max_retries", 0)})
+        mock_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+            close=lambda: None,
+        )
+        return mock_client
 
-    monkeypatch.setattr(OpenAICompatibleBaseClient, "_ensure_client", ensure)
+    monkeypatch.setattr("openai.OpenAI", mock_openai_constructor)
     monkeypatch.setenv("PROBE_MAIN_KEY", SECRET)
     monkeypatch.setenv("PROBE_BACKUP_KEY", SECRET)
     return SimpleNamespace(calls=calls, behaviors=behaviors, clients=clients)

@@ -10,7 +10,6 @@ import pytest
 from openai import APIStatusError
 from wenyi_core.llm.configuration import LLMConfig
 from wenyi_core.llm.limits import RequestCancelled, RequestStopped
-from wenyi_core.llm.providers._openai_compatible import OpenAICompatibleBaseClient
 from wenyi_core.llm.retrying import EmptyResponseError, TruncatedResponseError
 from wenyi_core.llm.router import RoutedLLMClient
 
@@ -299,7 +298,8 @@ def test_parallel_calls_do_not_hold_the_cache_lock_during_requests(sdk):
     assert len(calls) == 5
 
 
-def test_native_openai_does_not_negotiate_compatible_formats(sdk):
+def test_native_openai_does_not_negotiate_compatible_formats(sdk, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     calls, _ = sdk
     with pytest.raises(APIStatusError):
         RoutedLLMClient(config(kind="openai")).complete_json([], operation="analysis.style")
@@ -307,8 +307,9 @@ def test_native_openai_does_not_negotiate_compatible_formats(sdk):
 
 
 def test_real_sdk_sends_schema_then_reuses_it_without_a_saved_option(monkeypatch):
-    from openai import OpenAI
+    import openai as openai_mod
 
+    RealOpenAI = openai_mod.OpenAI
     bodies = []
 
     def respond(request):
@@ -333,25 +334,20 @@ def test_real_sdk_sends_schema_then_reuses_it_without_a_saved_option(monkeypatch
             },
         )
 
-    # v1246: Patch OpenAI constructor BEFORE client creation
-    # Create mock SDK client
-    sdk_client = OpenAI(
-        api_key="no-key",
-        base_url="https://local.invalid/v1",
-        max_retries=0,
-        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
-    )
-    
-    # Patch constructor to return mock client for all requests
-    from unittest.mock import patch
-    
-    try:
-        with patch('openai.OpenAI', return_value=sdk_client):
-            # Create client with credentials
-            client = RoutedLLMClient(config(), credentials={"local": "test-key"})
-            assert client.complete_json([], operation="analysis.style") == VALUE
-            assert client.complete_json([], operation="translation.body") == VALUE
-    finally:
-        sdk_client.close()
+    def construct(**kwargs):
+        # Each isolated request gets its own SDK client and httpx client so production
+        # close() cannot shut the mock transport for later attempts.
+        return RealOpenAI(
+            api_key=kwargs.get("api_key") or "no-key",
+            base_url=kwargs.get("base_url") or "https://local.invalid/v1",
+            timeout=kwargs.get("timeout"),
+            max_retries=kwargs.get("max_retries", 0),
+            http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+        )
+
+    monkeypatch.setattr(openai_mod, "OpenAI", construct)
+    client = RoutedLLMClient(config(), credentials={"local": "test-key"})
+    assert client.complete_json([], operation="analysis.style") == VALUE
+    assert client.complete_json([], operation="translation.body") == VALUE
     assert modes(bodies) == ["json_object", "json_schema", "json_schema"]
     assert bodies[-1]["response_format"]["json_schema"]["schema"] == {"type": "object"}

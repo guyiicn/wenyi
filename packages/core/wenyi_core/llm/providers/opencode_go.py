@@ -66,25 +66,14 @@ class OpenCodeGoClient(OpenAICompatibleBaseClient[OpenCodeGoOptions]):
         # One session id per connection/client lifetime (stable across retries in a run).
         self._session_id = str(uuid.uuid4())
 
-    def _ensure_client(self) -> Any:
-        """Create the SDK client with OpenCode Go identity headers only for this provider."""
-        with self._client_lock:
-            if self._client is None:
-                from openai import OpenAI
-
-                self.validate_credentials()
-                api_key = self.api_key()
-                self._client = OpenAI(
-                    api_key=api_key or "no-key",
-                    base_url=self.base_url,
-                    timeout=self.cfg.timeout,
-                    max_retries=0,
-                    default_headers={
-                        "User-Agent": USER_AGENT,
-                        "x-opencode-session": self._session_id,
-                    },
-                )
-        return self._client
+    def _openai_sdk_kwargs(self) -> dict[str, Any]:
+        """Send OpenCode Go identity headers on listing and isolated complete() clients."""
+        return {
+            "default_headers": {
+                "User-Agent": USER_AGENT,
+                "x-opencode-session": self._session_id,
+            }
+        }
 
     def _build_request_kwargs(
         self,

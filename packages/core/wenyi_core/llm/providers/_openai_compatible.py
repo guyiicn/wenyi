@@ -120,28 +120,34 @@ def normalize_openai_usage(usage: Any, *, separate_cache_writes: bool = True) ->
 class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
     """Reuse one SDK connection; route selection and usage belong to the caller."""
 
+    def _openai_sdk_kwargs(self) -> dict[str, Any]:
+        """Extra ``OpenAI()`` constructor kwargs owned by a concrete provider."""
+        return {}
+
+    def _create_openai_client(self) -> Any:
+        """Build one isolated SDK client. Callers must close it."""
+        import httpx
+        from openai import OpenAI
+
+        self.validate_credentials()
+        timeout_config = httpx.Timeout(
+            connect=min(60.0, self.cfg.timeout),
+            read=self.cfg.timeout,
+            write=self.cfg.timeout,
+            pool=min(60.0, self.cfg.timeout),
+        )
+        return OpenAI(
+            api_key=self.api_key() or "no-key",
+            base_url=self.base_url,
+            timeout=timeout_config,
+            max_retries=0,
+            **self._openai_sdk_kwargs(),
+        )
+
     def _ensure_client(self) -> Any:
         with self._client_lock:
             if self._client is None:
-                import httpx
-                from openai import OpenAI
-
-                self.validate_credentials()
-                api_key = self.api_key()
-                # Use explicit httpx.Timeout to ensure read timeout covers stalled/dead connections.
-                # Single float timeout may not reliably detect ESTABLISHED connections with no response body.
-                timeout_config = httpx.Timeout(
-                    connect=min(60.0, self.cfg.timeout),  # Connect should be fast
-                    read=self.cfg.timeout,  # Read timeout for waiting between bytes
-                    write=self.cfg.timeout,  # Write timeout
-                    pool=min(60.0, self.cfg.timeout),  # Pool timeout
-                )
-                self._client = OpenAI(
-                    api_key=api_key or "no-key",
-                    base_url=self.base_url,
-                    timeout=timeout_config,
-                    max_retries=0,
-                )
+                self._client = self._create_openai_client()
         return self._client
 
     def list_models(self) -> list[str]:
@@ -187,9 +193,7 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         context: RequestContext,
         response_format: dict[str, Any] | None = None,
     ) -> str:
-        import httpx
         import threading
-        from openai import OpenAI
 
         model_config = model
         kwargs = self._build_request_kwargs(
@@ -198,78 +202,48 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         if response_format is not None:
             kwargs["response_format"] = response_format
 
-        # Resource-bounded timeout: isolated client per request, close on timeout to terminate.
-        # 
-        # Problem: Trickle responses (1 byte/sec) bypass httpx read timeout. Using shared client
-        # with daemon threads causes unbounded accumulation over thousands of calls.
-        #
-        # Solution:
-        # 1. Create isolated client (independent connection pool)
-        # 2. Close client on timeout to interrupt socket → thread exits promptly
-        # 3. Bounded resources: threads converge as old connections close
-        #
-        # Verified: client.close() terminates trickle read within 2 seconds.
+        # Isolated client per request: trickle replies bypass httpx read timeout, so the
+        # application join bound closes this request's sockets without touching others.
         result_box: list[Any] = []
         client_box: list[Any] = []
-        
-        def _do_request():
+
+        def _do_request() -> None:
+            client = None
             try:
-                # Create isolated client for this request
-                api_key = self.api_key()
-                timeout_config = httpx.Timeout(
-                    connect=min(60.0, self.cfg.timeout),
-                    read=self.cfg.timeout,
-                    write=self.cfg.timeout,
-                    pool=min(60.0, self.cfg.timeout),
-                )
-                client = OpenAI(
-                    api_key=api_key or "no-key",
-                    base_url=self.base_url,
-                    timeout=timeout_config,
-                    max_retries=0,
-                )
+                client = self._create_openai_client()
                 client_box.append(client)
-                
                 response = client.chat.completions.create(**kwargs)
                 result_box.append(("success", response))
             except BaseException as error:
                 result_box.append(("error", error))
             finally:
-                # Close client when done
-                if client_box:
+                if client is not None:
                     try:
-                        client_box[0].close()
+                        client.close()
                     except Exception:
                         pass
 
         thread = threading.Thread(target=_do_request, daemon=True, name="llm-request")
         thread.start()
-        
         timeout_seconds = self.cfg.timeout * 1.1
         thread.join(timeout=timeout_seconds)
-        
+
         if thread.is_alive():
-            # Timeout: close client to interrupt connection
             if client_box:
                 try:
                     client_box[0].close()
                 except Exception:
                     pass
-            
-            # Wait briefly for thread to exit
             thread.join(timeout=2.0)
-            
-            raise TimeoutError(
-                f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)"
-            )
-        
+            raise TimeoutError(f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)")
+
         if not result_box:
             raise RuntimeError("LLM request thread finished without result")
-        
+
         status, payload = result_box[0]
         if status == "error":
             raise payload
-        
+
         response = payload
         context.record_usage(self._normalize_usage(getattr(response, "usage", None)))
         choice = response.choices[0]

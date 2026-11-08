@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import json
 import os
 from pathlib import Path
 from typing import Any
@@ -12,7 +11,6 @@ from typing import Any
 import typer
 from rich.console import Console
 from rich.table import Table
-
 from wenyi_core.glossary.store import GlossaryStore
 from wenyi_core.models.glossary import GlossaryTerm, normalize_term_type
 from wenyi_core.storage.protocol import Storage
@@ -301,8 +299,8 @@ def import_glossary(
     store: Storage | None,
     file_path: Path,
     *,
-    input_path: str,
-    config,
+    input_path: str | None = None,
+    config: Any = None,
     source_col: str = "english",
     target_col: str = "preferred_zh_cn",
     type_col: str | None = "type",
@@ -316,6 +314,7 @@ def import_glossary(
 
     For fresh projects without manifest, creates minimal state to enable import before
     AI preparation. This allows importing frozen terminology before any model calls.
+    Required parameters input_path and config are only needed for fresh project initialization.
 
     Dry-run mode performs pure validation without creating any directories or files.
     """
@@ -336,6 +335,11 @@ def import_glossary(
         console.print("Initializing fresh project for glossary import...")
         if store is None:
             raise ImportError("Cannot initialize without store object")
+        if input_path is None or config is None:
+            raise ImportError(
+                "No translation state found. "
+                "To import on a fresh project, provide input_path and config for initialization."
+            )
         _initialize_minimal_state(store, input_path, config)
     elif not is_fresh and dry_run:
         # Existing project dry-run: validate without writes
@@ -446,7 +450,7 @@ def register_import_command(app: typer.Typer, context) -> None:
                 # Dry-run: check if state exists without creating it
                 try:
                     store = runstore_for_cli(config, input, console=console, allow_missing=False)
-                except:
+                except typer.Exit:
                     # Fresh project: pure validation, no store needed
                     store = None
 
