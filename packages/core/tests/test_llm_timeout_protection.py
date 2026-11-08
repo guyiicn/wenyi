@@ -37,11 +37,13 @@ def test_application_timeout_fires_on_stalled_connection():
     # Use very short timeout for test speed
     cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=2.0)
     client = FakeClient(cfg)
+    client._credentials = ("test-key",)  # Tuple: (api_key,)
     
-    # Mock _ensure_client to return a mock SDK client
+    # Mock OpenAI constructor to return mock SDK client (called per-request in v1246)
     mock_sdk_client = Mock()
     mock_completions = Mock()
     mock_sdk_client.chat.completions = mock_completions
+    mock_sdk_client.close = Mock()  # Add close method
     
     # Simulate stalled connection: create() hangs for longer than timeout
     def slow_create(**kwargs):
@@ -52,7 +54,7 @@ def test_application_timeout_fires_on_stalled_connection():
     
     threads_before = threading.active_count()
     
-    with patch.object(client, '_ensure_client', return_value=mock_sdk_client):
+    with patch('openai.OpenAI', return_value=mock_sdk_client):
         messages = [{"role": "user", "content": "test"}]
         model = ResolvedModel(model="test-model", options=FakeOptions())
         context = RequestContext(
@@ -74,6 +76,9 @@ def test_application_timeout_fires_on_stalled_connection():
     threads_after = threading.active_count()
     # May have one daemon thread still running, that's OK (it won't block exit)
     assert threads_after <= threads_before + 1, f"Thread leak: {threads_before} -> {threads_after}"
+    
+    # Verify close was called on timeout
+    assert mock_sdk_client.close.called
 
 
 def test_application_timeout_allows_slow_but_progressing_requests():
@@ -83,11 +88,13 @@ def test_application_timeout_allows_slow_but_progressing_requests():
     """
     cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=3.0)
     client = FakeClient(cfg)
+    client._credentials = ("test-key",)  # Tuple: (api_key,)
     
-    # Mock _ensure_client to return a mock SDK client
+    # Mock OpenAI constructor to return mock SDK client
     mock_sdk_client = Mock()
     mock_completions = Mock()
     mock_sdk_client.chat.completions = mock_completions
+    mock_sdk_client.close = Mock()
     
     # Simulate slow but successful request
     mock_response = Mock()
@@ -100,7 +107,7 @@ def test_application_timeout_allows_slow_but_progressing_requests():
     
     mock_completions.create = slow_create
     
-    with patch.object(client, '_ensure_client', return_value=mock_sdk_client):
+    with patch('openai.OpenAI', return_value=mock_sdk_client):
         messages = [{"role": "user", "content": "test"}]
         model = ResolvedModel(model="test-model", options=FakeOptions())
         context = RequestContext(
@@ -115,6 +122,9 @@ def test_application_timeout_allows_slow_but_progressing_requests():
         # Should complete successfully
         result = client._request(messages, model, json_mode=False, context=context)
         assert result == "test response"
+        
+        # Verify close was still called (in finally block)
+        assert mock_sdk_client.close.called
 
 
 def test_application_timeout_fires_on_trickle_response():
@@ -123,27 +133,43 @@ def test_application_timeout_fires_on_trickle_response():
     Critical regression: server returns 200 headers then 1 byte/second trickle.
     Each byte arrives within httpx read timeout, so httpx doesn't fire.
     Application timeout must enforce total wall-clock deadline.
+    
+    Note: In mock environment, time.sleep() cannot be interrupted by client.close().
+    Real socket read IS interrupted (verified by convergence_test_v1246.py).
+    Test verifies timeout detection and close() call, not mock sleep interruption.
     """
     import threading
     
     # Use very short timeout for test speed
     cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=1.0)
     client = FakeClient(cfg)
+    client._credentials = ("test-key",)  # Tuple: (api_key,)
     
     mock_sdk_client = Mock()
     mock_completions = Mock()
     mock_sdk_client.chat.completions = mock_completions
+    close_called = []  # Track close() calls
+    
+    def mock_close():
+        close_called.append(True)
+    
+    mock_sdk_client.close = mock_close
     
     # Simulate trickle response: send bytes slowly but continuously
     def trickle_create(**kwargs):
         # Sleep in small increments, simulating trickle (1 byte every 0.3s)
-        for _ in range(10):  # Would take 3 seconds total
+        for i in range(10):  # Would take 3 seconds total
             time.sleep(0.3)
+            # In mock: sleep can't be interrupted. In real: socket read terminates.
+            # Check if close was called (would interrupt real socket)
+            if close_called:
+                # Real behavior: socket closed, exit promptly
+                return
         raise AssertionError("Should not reach here - timeout should fire first")
     
     mock_completions.create = trickle_create
     
-    with patch.object(client, '_ensure_client', return_value=mock_sdk_client):
+    with patch('openai.OpenAI', return_value=mock_sdk_client):
         messages = [{"role": "user", "content": "test"}]
         model = ResolvedModel(model="test-model", options=FakeOptions())
         context = RequestContext(
@@ -161,9 +187,12 @@ def test_application_timeout_fires_on_trickle_response():
         elapsed = time.time() - start
         
         # Verify timeout fired around configured timeout (1.0s * 1.1 = 1.1s)
-        # Not after full trickle duration (3s)
-        assert elapsed < 2.0, f"Timeout took too long: {elapsed:.2f}s (expected ~1.1s)"
-        assert elapsed > 1.0, f"Timeout fired too early: {elapsed:.2f}s (expected ~1.1s)"
+        # With mock checking close_called, should exit after ~1.2s (1.0s + 0.3s*1 loop)
+        assert elapsed < 2.0, f"Timeout took too long: {elapsed:.2f}s (expected ~1.2s)"
+        assert elapsed > 1.0, f"Timeout fired too early: {elapsed:.2f}s (expected ~1.2s)"
+        
+        # Verify close was called on timeout
+        assert len(close_called) > 0, "close() should have been called on timeout"
 
 
 def test_timeout_error_is_retryable():
@@ -184,15 +213,19 @@ def test_daemon_thread_allows_process_exit():
     
     Critical: after timeout, daemon thread continues in background but doesn't
     prevent main thread from continuing or process from exiting cleanly.
+    
+    v1246 improves on this: close() should interrupt socket, causing thread exit.
     """
     import threading
     
     cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=0.5)
     client = FakeClient(cfg)
+    client._credentials = ("test-key",)  # Tuple: (api_key,)
     
     mock_sdk_client = Mock()
     mock_completions = Mock()
     mock_sdk_client.chat.completions = mock_completions
+    mock_sdk_client.close = Mock()
     
     # Simulate long-running request that never completes
     def infinite_request(**kwargs):
@@ -200,7 +233,7 @@ def test_daemon_thread_allows_process_exit():
     
     mock_completions.create = infinite_request
     
-    with patch.object(client, '_ensure_client', return_value=mock_sdk_client):
+    with patch('openai.OpenAI', return_value=mock_sdk_client):
         messages = [{"role": "user", "content": "test"}]
         model = ResolvedModel(model="test-model", options=FakeOptions())
         context = RequestContext(
@@ -215,6 +248,9 @@ def test_daemon_thread_allows_process_exit():
         # Timeout should fire quickly
         with pytest.raises(TimeoutError):
             client._request(messages, model, json_mode=False, context=context)
+        
+        # Verify close was called to interrupt socket
+        assert mock_sdk_client.close.called
         
         # Main thread continues immediately (daemon thread still running in background)
         # Test completes without waiting for daemon thread

@@ -98,6 +98,20 @@ class _ClientStub:
     def __init__(self, responses: list[Any]) -> None:
         self.chat = _ChatStub(responses)
 
+    def close(self) -> None:
+        """Noop close for v1246 isolated client compatibility."""
+        pass
+
+
+def _patch_openai_client(stub: _ClientStub):
+    """Patch OpenAI constructor for v1246 isolated client per request.
+    
+    Usage:
+        with _patch_openai_client(stub):
+            client.complete(...)
+    """
+    return patch('openai.OpenAI', return_value=stub)
+
 
 class _MeteredFakeClient(FakeClient):
     """Record fixed tokens per offline call for per-run ledger assertions."""
@@ -262,7 +276,9 @@ class TestOpenAICompatibleReasoningContent(unittest.TestCase):
             )
         )
 
-        with patch.object(client.adapter("default"), "_ensure_client", return_value=stub):
+        # v1246: isolated client per request, patch OpenAI constructor
+        client.adapter("default")._credentials = ("test-key",)
+        with _patch_openai_client(stub):
             self.assertEqual(
                 client.complete(
                     [{"role": "user", "content": "translate"}],
@@ -501,7 +517,9 @@ class TestMissingUsage(unittest.TestCase):
         choice = SimpleNamespace(message=msg)
         # No usage attribute.
         resp = SimpleNamespace(choices=[choice])
-        with patch.object(c.adapter("default"), "_ensure_client", return_value=_ClientStub([resp])):
+        # v1246: isolated client per request, patch OpenAI constructor
+        c.adapter("default")._credentials = ("test-key",)
+        with _patch_openai_client(_ClientStub([resp])):
             self.assertEqual(
                 c.complete([{"role": "user", "content": "x"}], operation="translation.body"), "ok"
             )
