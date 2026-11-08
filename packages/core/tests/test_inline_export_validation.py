@@ -6,7 +6,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 from wenyi_core.assemble.inline_validation import InlinePreservationError
 from wenyi_core.assemble.writer import assemble
 from wenyi_core.models.document import Chapter, Segment
@@ -73,7 +72,6 @@ def _create_test_store_with_inline(
         "target_lang": "zh",
         "chapter_count": 1,
         "source_sha256": "abc123",
-        "chapters": [{"index": 0, "title": "", "status": "done"}],
         "chapters": [{"index": 0, "title": "", "status": "done"}],
     }
     store.save_manifest(manifest)
