@@ -6,14 +6,12 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
 
 from rich.console import Console
+from wenyi_cli.commands.glossary_import import import_glossary
 from wenyi_core.config import Config
 from wenyi_core.glossary.store import GlossaryStore
 from wenyi_core.storage.file import FileStorage
-
-from wenyi_cli.commands.glossary_import import import_glossary
 
 
 class TestGlossaryImport(unittest.TestCase):
