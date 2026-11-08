@@ -117,7 +117,7 @@ def assemble(
             source_path, "txt", "", bilingual=bilingual, target_lang=target_lang
         )
         _ensure_parent_dir(out_path)
-        return _assemble_text(view, out_path, bilingual=bilingual, order=order)
+        return _assemble_text(view, source_path, out_path, bilingual=bilingual, order=order)
     if out_format == "html":
         out_path = out_path or _default_out(
             source_path, "html", "", bilingual=bilingual, target_lang=target_lang
@@ -136,7 +136,7 @@ def assemble(
             source_path, "markdown", "", bilingual=bilingual, target_lang=target_lang
         )
         _ensure_parent_dir(out_path)
-        return _assemble_markdown(view, out_path, bilingual=bilingual, order=order)
+        return _assemble_markdown(view, source_path, out_path, bilingual=bilingual, order=order)
     if out_format == "pdf":
         out_path = out_path or _default_out(
             source_path, "pdf", "", bilingual=bilingual, target_lang=target_lang

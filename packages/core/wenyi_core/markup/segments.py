@@ -565,10 +565,36 @@ def annotate_epub_resource(
             if block.has_attr("data-tn-id"):
                 position += 1
                 continue
+            
+            # Check if block is nested inside another block that was processed as segment
+            # (prevents duplicate image_blocks for nested containers)
+            parent_has_tn_id = any(
+                parent.has_attr("data-tn-id") 
+                for parent in block.parents 
+                if isinstance(parent, Tag) and parent != body
+            )
+            if parent_has_tn_id:
+                # This block is inside a segment, don't create separate image_block
+                continue
 
             # Check if block contains only images (no text)
             text_content = block.get_text(strip=True)
-            images = block.find_all("img")
+            # Only consider images where there's no intermediate block between img and current block
+            # (prevents recording same image in nested container and actual parent)
+            direct_images = []
+            for img in block.find_all("img"):
+                # Check if any block-level element exists between img and current block
+                has_intermediate_block = False
+                for parent in img.parents:
+                    if parent == block or parent == body:
+                        break
+                    if isinstance(parent, Tag) and parent.name in _BLOCK_CANDIDATE_TAGS:
+                        has_intermediate_block = True
+                        break
+                if not has_intermediate_block:
+                    direct_images.append(img)
+            
+            images = direct_images
 
             if not text_content and images:
                 image_list = []

@@ -219,6 +219,7 @@ def _extract_images_from_epub(
 
 def _assemble_plain_text(
     store: AssembleStore,
+    source_path: str,
     out_path: str,
     *,
     bilingual: bool = False,
@@ -235,7 +236,6 @@ def _assemble_plain_text(
     segment_images: dict[tuple[int, int], list[tuple[str, str, str]]] = {}
 
     if markdown:
-        source_path = m.get("source_path")
         if isinstance(source_path, str) and source_path:
             # Create assets directory next to output
             out_dir = os.path.dirname(os.path.abspath(out_path))
@@ -325,8 +325,13 @@ def _assemble_plain_text(
         blocks: list[str] = []
 
         # Add chapter title page if markdown and chapter has title
-        if markdown and ch.title:
-            blocks.append(f"# {ch.title}")
+        if markdown:
+            # Prefer translated title from manifest over chapter.title
+            ch_info = c  # Current chapter dict from manifest
+            title_translated = ch_info.get("title_translated", "")
+            title = title_translated or ch.title
+            if title:
+                blocks.append(f"# {title}")
 
         # Get image blocks for this chapter
         raw_image_blocks = ch.meta.get("image_blocks")
@@ -440,22 +445,26 @@ def _assemble_plain_text(
 # Plain text.
 def _assemble_text(
     store: AssembleStore,
+    source_path: str,
     out_path: str,
     *,
     bilingual: bool = False,
     order: str = "target_first",
 ) -> str:
     """Rebuild UTF-8 text by chapter and paragraph, optionally including bilingual source text."""
-    return _assemble_plain_text(store, out_path, bilingual=bilingual, order=order)
+    return _assemble_plain_text(store, source_path, out_path, bilingual=bilingual, order=order)
 
 
 # ── markdown ──────────────────────────────────────────────────────────────────
 def _assemble_markdown(
     store: AssembleStore,
+    source_path: str,
     out_path: str,
     *,
     bilingual: bool = False,
     order: str = "target_first",
 ) -> str:
     """Rebuild Markdown with # headings and optional bilingual source text."""
-    return _assemble_plain_text(store, out_path, bilingual=bilingual, order=order, markdown=True)
+    return _assemble_plain_text(
+        store, source_path, out_path, bilingual=bilingual, order=order, markdown=True
+    )
