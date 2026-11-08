@@ -51,8 +51,6 @@ def test_polish_with_length_change_preserves_inline_markers():
     ]
 
     # Mock translator.translate_batch to return clean text
-    original_translate = translator.translate_batch
-
     def mock_translate(*args, **kwargs):
         translator.last_inline_metas = executor._translator.last_inline_metas
         translator.last_batch_turn = executor._translator.last_batch_turn
