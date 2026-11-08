@@ -257,13 +257,35 @@ def test_polish_removes_markers():
             system = messages[0]["content"]
             user = messages[-1]["content"]
 
+            # Check polish FIRST (before translator check) since both can match
+            if "Polish" in user or "polish" in user.lower() or "polish" in system.lower():
+                # Polish: strip all markers intentionally
+                for msg in reversed(messages[:-1]):
+                    if msg.get("role") == "assistant":
+                        try:
+                            prev = json.loads(msg["content"])
+                            trans = prev.get("translations", [])
+                            if trans:
+                                # Intentionally remove ALL markers to test preservation_failed
+                                polished = []
+                                for t in trans:
+                                    # Strip all inline markers
+                                    cleaned = re.sub(r"\[\[[A-Z_0-9]+_(START|END)\]\]", "", t)
+                                    polished.append(cleaned)
+                                return json.dumps({"polished": polished}, ensure_ascii=False)
+                        except Exception:
+                            pass
+                # Fallback for polish without previous translations
+                n = len(re.findall(r"^\[(\d+)\]", user, re.MULTILINE))
+                return json.dumps({"polished": ["润文"] * n}, ensure_ascii=False)
+
             if "translator" in system.lower():
                 # Translation: preserve markers
                 paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)
                 if paragraphs:
                     translations = []
                     for idx, text in paragraphs:
-                        marker_pattern = r"(\[\[[A-Z_]+_(START|END)\]\])"
+                        marker_pattern = r"(\[\[[A-Z_0-9]+_(START|END)\]\])"
                         parts = re.split(marker_pattern, text)
                         result = []
                         for part in parts:
@@ -273,21 +295,6 @@ def test_polish_removes_markers():
                                 result.append(f"中文{idx}")
                         translations.append("".join(result))
                     return json.dumps({"translations": translations}, ensure_ascii=False)
-
-            elif "Polish" in user or "polish" in system.lower():
-                # Polish: strip all markers
-                for msg in reversed(messages[:-1]):
-                    if msg.get("role") == "assistant":
-                        try:
-                            prev = json.loads(msg["content"])
-                            trans = prev.get("translations", [])
-                            if trans:
-                                polished = [
-                                    re.sub(r"\[\[[A-Z_]+_(START|END)\]\]", "", t) for t in trans
-                                ]
-                                return json.dumps({"polished": polished}, ensure_ascii=False)
-                        except Exception:
-                            pass
 
             return base_routing_handler(messages, tier, json_mode)
 
