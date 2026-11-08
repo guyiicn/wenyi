@@ -97,6 +97,13 @@ def assemble(
         )
     m = view.load_manifest()
     view.prepare()
+    
+    # Validate inline preservation before export (fail-closed)
+    from .inline_validation import validate_inline_preservation_for_export
+    
+    chapters = [view.load_chapter(i) for i in range(m["chapter_count"])]
+    validate_inline_preservation_for_export(chapters, allow_proportional_fallback=False)
+    
     target_lang = _manifest_target_lang(m)
     if out_format == "txt":
         out_path = out_path or _default_out(
