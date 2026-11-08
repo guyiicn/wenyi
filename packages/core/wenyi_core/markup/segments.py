@@ -33,6 +33,9 @@ def _preserved_inline_roots(block: Tag) -> list[Tag]:
     """Return nontext nodes for unchanged backfill, preserving text-free wrappers where
     possible.
     """
+    # Emphasis tags that need inline marker encoding/decoding during translation
+    _EMPHASIS_TAGS = {"i", "em", "strong", "b"}
+    
     roots: list[Tag] = []
     seen: set[int] = set()
     for candidate in block.find_all(True):
@@ -42,12 +45,13 @@ def _preserved_inline_roots(block: Tag) -> list[Tag]:
             # so rebuilding a range link's body cannot erase those children.
             continue
         is_atomic = candidate.name in _ATOMIC_INLINE_TAGS
+        is_emphasis = candidate.name in _EMPHASIS_TAGS and candidate.get_text(strip=True)
         is_empty_anchor = (
             candidate.name in {"a", "span"}
             and not candidate.get_text(strip=True)
             and (candidate.has_attr("id") or candidate.has_attr("name"))
         )
-        if not is_atomic and not is_empty_anchor:
+        if not is_atomic and not is_emphasis and not is_empty_anchor:
             continue
 
         root = candidate
