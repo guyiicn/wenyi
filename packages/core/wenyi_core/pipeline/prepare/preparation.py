@@ -128,9 +128,33 @@ class PreparationService:
 
         with store.lock():
             if store.exists():
-                self._runtime.ensure_store_source(store, input_path)
-                store.log_event("run_resumed", input_path=input_path, run_dir=store.run_dir)
-                return store
+                # Check if this is a minimal glossary-only initialization
+                manifest = store.load_manifest()
+                if manifest.get("glossary_import_only"):
+                    # Complete the initialization by parsing the document
+                    store.log_event(
+                        "completing_glossary_import_initialization",
+                        input_path=input_path,
+                        run_dir=store.run_dir,
+                    )
+                    # Parse document to populate chapters
+                    doc = parse_document(
+                        store,
+                        input_path,
+                        self._runtime.config,
+                        expected_sha256=source_hash,
+                        progress=progress,
+                        mineru_token_resolver=self._mineru_token_resolver,
+                    )
+                    # Complete initialization with parsed chapters
+                    return self._complete_glossary_initialization(
+                        doc, store, input_path, progress, manifest
+                    )
+                else:
+                    # Normal resume: state is fully prepared
+                    self._runtime.ensure_store_source(store, input_path)
+                    store.log_event("run_resumed", input_path=input_path, run_dir=store.run_dir)
+                    return store
             if os.path.splitext(input_path)[1].lower() == ".pdf":
                 # Preserve the source identity and event history when conversion fails.
                 store.begin_initialization(source_hash)
@@ -149,6 +173,46 @@ class PreparationService:
                 progress,
                 source_hash=source_hash,
             )
+
+    def _complete_glossary_initialization(
+        self,
+        doc,
+        store: Storage,
+        input_path: str,
+        progress: ProgressFn | None,
+        existing_manifest: dict,
+    ) -> Storage:
+        """Complete a glossary-only initialization by adding parsed chapters.
+        
+        Preserves the glossary terms imported before prepare, adds parsed chapters,
+        and removes the glossary_import_only marker.
+        """
+        # Stage the document to get chapters
+        new_manifest = store.stage_document(doc)
+        
+        # Merge with existing manifest to preserve glossary state
+        # Keep source identity and language from existing
+        merged_manifest = {
+            **new_manifest,
+            "source_sha256": existing_manifest.get("source_sha256", new_manifest["source_sha256"]),
+        }
+        
+        # Remove the glossary_import_only marker
+        merged_manifest.pop("glossary_import_only", None)
+        
+        # Write merged manifest
+        store.write_artifact("manifest.json", merged_manifest)
+        
+        # Mark initialization as complete
+        store.finish_initialization()
+        
+        store.log_event(
+            "glossary_initialization_completed",
+            input_path=input_path,
+            chapter_count=len(merged_manifest.get("chapters", [])),
+        )
+        
+        return store
 
     def _prepare_locked(
         self,
