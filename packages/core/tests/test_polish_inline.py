@@ -205,7 +205,7 @@ def test_polish_render_not_polluted_across_batches():
 
     translator.translate_batch = mock_translate_inline
     plan1 = batch_plan(["Example."])
-    result1 = executor.execute(plan1, polish=True)
+    executor.execute(plan1, polish=True)
 
     inline_prompt = prompts_seen[-1]
     assert "CRITICAL" in inline_prompt or "protected inline markers" in inline_prompt
@@ -221,7 +221,7 @@ def test_polish_render_not_polluted_across_batches():
 
     translator.translate_batch = mock_translate_plain
     plan2 = batch_plan(["Normal text."])
-    result2 = executor.execute(plan2, polish=True)
+    executor.execute(plan2, polish=True)
 
     plain_prompt = prompts_seen[-1]
     # Should NOT have inline preservation instructions
