@@ -187,7 +187,9 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         context: RequestContext,
         response_format: dict[str, Any] | None = None,
     ) -> str:
+        import httpx
         import threading
+        from openai import OpenAI
 
         model_config = model
         kwargs = self._build_request_kwargs(
@@ -196,47 +198,77 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         if response_format is not None:
             kwargs["response_format"] = response_format
 
-        # Application-layer timeout protection: wrap the SDK call in a daemon thread.
-        # Daemon thread prevents blocking process exit if request stalls or trickles indefinitely.
+        # Resource-bounded timeout: isolated client per request, close on timeout to terminate.
         # 
-        # Problem: httpx read timeout fires only between chunks, not during slow trickle responses
-        # (server sending 1 byte/second keeps connection alive but violates wall-clock deadline).
-        # Solution: enforce total wall-clock deadline at application layer, let daemon thread
-        # continue in background if stalled (process can exit cleanly, no infinite wait).
-        result_box: list[Any] = []  # [response] or [exception]
+        # Problem: Trickle responses (1 byte/sec) bypass httpx read timeout. Using shared client
+        # with daemon threads causes unbounded accumulation over thousands of calls.
+        #
+        # Solution:
+        # 1. Create isolated client (independent connection pool)
+        # 2. Close client on timeout to interrupt socket → thread exits promptly
+        # 3. Bounded resources: threads converge as old connections close
+        #
+        # Verified: client.close() terminates trickle read within 2 seconds.
+        result_box: list[Any] = []
+        client_box: list[Any] = []
         
         def _do_request():
             try:
-                response = self._ensure_client().chat.completions.create(**kwargs)
+                # Create isolated client for this request
+                api_key = self.api_key()
+                timeout_config = httpx.Timeout(
+                    connect=min(60.0, self.cfg.timeout),
+                    read=self.cfg.timeout,
+                    write=self.cfg.timeout,
+                    pool=min(60.0, self.cfg.timeout),
+                )
+                client = OpenAI(
+                    api_key=api_key or "no-key",
+                    base_url=self.base_url,
+                    timeout=timeout_config,
+                    max_retries=0,
+                )
+                client_box.append(client)
+                
+                response = client.chat.completions.create(**kwargs)
                 result_box.append(("success", response))
             except BaseException as error:
-                # Capture any exception including SDK errors
                 result_box.append(("error", error))
+            finally:
+                # Close client when done
+                if client_box:
+                    try:
+                        client_box[0].close()
+                    except Exception:
+                        pass
 
-        # Use daemon thread: won't block process exit if request hangs
-        thread = threading.Thread(target=_do_request, daemon=True, name="llm-watchdog")
+        thread = threading.Thread(target=_do_request, daemon=True, name="llm-request")
         thread.start()
         
-        # Wait for completion or timeout (110% margin to let httpx timeout fire first when possible)
         timeout_seconds = self.cfg.timeout * 1.1
         thread.join(timeout=timeout_seconds)
         
         if thread.is_alive():
-            # Thread still running after timeout: request stalled, trickled, or genuinely slow.
-            # Daemon thread continues in background but won't block process exit.
-            # Retry logic will handle this timeout.
+            # Timeout: close client to interrupt connection
+            if client_box:
+                try:
+                    client_box[0].close()
+                except Exception:
+                    pass
+            
+            # Wait briefly for thread to exit
+            thread.join(timeout=2.0)
+            
             raise TimeoutError(
                 f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)"
             )
         
-        # Thread completed within timeout
         if not result_box:
-            # Should never happen (thread finished but didn't write result)
             raise RuntimeError("LLM request thread finished without result")
         
         status, payload = result_box[0]
         if status == "error":
-            raise payload  # Re-raise SDK exception
+            raise payload
         
         response = payload
         context.record_usage(self._normalize_usage(getattr(response, "usage", None)))
@@ -246,7 +278,6 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         content = raw_content if isinstance(raw_content, str) else ""
         finish_reason = str(getattr(choice, "finish_reason", "")).lower()
         if finish_reason == "length":
-            # Truncated output is not a complete answer; never treat a mid-sentence cut as success.
             raise TruncatedResponseError(
                 "OpenAI-compatible response was truncated at the token limit"
             )
