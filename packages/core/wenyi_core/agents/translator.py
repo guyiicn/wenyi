@@ -31,6 +31,7 @@ class Translator(Agent):
         super().__init__(client, config)
         self.last_batch_turn: Messages | None = None
         self.last_batch_indices: list[int] | None = None
+        self.last_inline_metas: list[dict[str, object]] | None = None
 
     @staticmethod
     def _needs_translation(source: str) -> bool:
@@ -132,7 +133,7 @@ class Translator(Agent):
             n_minus_1=n - 1,
             numbered_source=prompts.numbered(sources),
             next_source=prompts.render_source_reference(next_source),
-        )
+        ) + inline_preservation_suffix
         messages: Messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -205,28 +206,53 @@ class Translator(Agent):
         annotation_contexts: list[list[dict[str, str]]] | None = None,
         next_source: str = "",
         allow_empty_translations: bool = False,
+        segment_metas: list[dict[str, object]] | None = None,
     ) -> list[str]:
         """Translate aligned paragraphs with one following source segment as reference only."""
         self.last_batch_turn = None
         self.last_batch_indices = None
+        self.last_inline_metas = None
         glossary_terms = glossary_terms or []
         n = len(sources)
         annotation_contexts = self._validate_annotation_contexts(sources, annotation_contexts)
         if n == 0:
             return []
 
+        # Prepare inline markers
+        from ..pipeline.translate.inline_translation import (
+            prepare_sources_with_inline,
+            decode_targets_with_inline,
+            inline_preservation_prompt_suffix,
+        )
+
+        segment_metas = segment_metas or [{} for _ in sources]
+        if len(segment_metas) != len(sources):
+            raise ValueError(
+                f"segment_metas length ({len(segment_metas)}) must match sources ({len(sources)})"
+            )
+
+        # Encode inline markers before translation
+        encoded_sources, inline_nodes_per_segment = prepare_sources_with_inline(
+            sources, segment_metas
+        )
+
         translated_indices = [
-            index for index, source in enumerate(sources) if self._needs_translation(source)
+            index for index, source in enumerate(encoded_sources) if self._needs_translation(source)
         ]
         if not translated_indices:
             return list(sources)
-        translated_sources = [sources[index] for index in translated_indices]
+        translated_sources = [encoded_sources[index] for index in translated_indices]
         translated_annotation_contexts = [
             annotation_contexts[index] for index in translated_indices
         ]
+        translated_inline_nodes = [inline_nodes_per_segment[index] for index in translated_indices]
+
         # A filtered trailing number or symbol remains the immediate source neighbor.
         following_index = translated_indices[-1] + 1
-        batch_next_source = sources[following_index] if following_index < n else next_source
+        batch_next_source = encoded_sources[following_index] if following_index < n else next_source
+
+        # Check if any segment has inline markers
+        has_inline_markers = any(nodes is not None for nodes in translated_inline_nodes)
 
         attempts = self.config.pipeline.align_retry_limit + 1
         for _ in range(attempts):
@@ -241,12 +267,31 @@ class Translator(Agent):
                     translated_annotation_contexts,
                     next_source=batch_next_source,
                     allow_empty_translations=allow_empty_translations,
+                    inline_preservation_suffix=inline_preservation_prompt_suffix() if has_inline_markers else "",
                 )
+
+                # Decode inline markers from translated text
+                clean_targets, target_inline_metas, warnings = decode_targets_with_inline(
+                    translated, translated_inline_nodes
+                )
+
+                if warnings:
+                    # Log warnings but continue (validation happens at storage time)
+                    pass
+
+                # Map back to original indices
                 targets = list(sources)
-                for index, target in zip(translated_indices, translated):
-                    targets[index] = target
+                inline_metas_full = [{}] * n
+                for index, clean_target, inline_meta in zip(
+                    translated_indices, clean_targets, target_inline_metas
+                ):
+                    targets[index] = clean_target
+                    if inline_meta:
+                        inline_metas_full[index] = inline_meta
+
                 self.last_batch_turn = turn
                 self.last_batch_indices = list(translated_indices)
+                self.last_inline_metas = inline_metas_full
                 return targets
             except AlignmentError:
                 # Recover only output protocol/alignment errors; the provider handles transport retries.
