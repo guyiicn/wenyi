@@ -96,6 +96,11 @@ class TranslationBatchExecutor:
         targets = [strip_ruby_markers(target) for target in targets]
         inline_metas = self._translator.last_inline_metas or []
         before_polish: tuple[str | None, ...] = (None,) * len(targets)
+        # DEBUG
+        import sys
+        print(f"DEBUG: After translation, targets[0]={targets[0] if targets else 'EMPTY'}", file=sys.stderr)
+        print(f"DEBUG: inline_metas[0]={inline_metas[0] if inline_metas else 'EMPTY'}", file=sys.stderr)
+        print(f"DEBUG: polish={polish}", file=sys.stderr)
         if polish:
             from ...markup.inline_markers import InlineNode
             from ..translate.inline_translation import (
@@ -211,6 +216,10 @@ class TranslationBatchExecutor:
 
                 targets = clean_polished
                 inline_metas = list(new_inline_metas)
+            else:
+                # DEBUG
+                import sys
+                print(f"DEBUG: Polish decode skipped - polished len={len(polished)}, targets len={len(targets)}", file=sys.stderr)
 
         return BatchResult(tuple(targets), before_polish, None, tuple(inline_metas))
 
