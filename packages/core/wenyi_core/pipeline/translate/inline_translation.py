@@ -115,8 +115,15 @@ def decode_targets_with_inline(
                 ],
                 "source_node_count": len(original_nodes),
                 "target_node_count": len(ranges),
-                "validation_warnings": warnings,
+                "validation_warnings": warnings if warnings else [],
             }
+
+            # Critical: empty ranges with source nodes = preservation failure
+            if len(original_nodes) > 0 and len(ranges) == 0:
+                target_inline_meta["preservation_failed"] = True
+                all_warnings.append(
+                    f"Segment {idx}: All {len(original_nodes)} inline markers lost during translation/polish"
+                )
 
             clean_targets.append(clean_text)
             target_inline_metas.append(target_inline_meta)
@@ -129,7 +136,9 @@ def decode_targets_with_inline(
                 {
                     "version": 1,
                     "decode_failed": True,
+                    "preservation_failed": True,
                     "error": str(e),
+                    "source_node_count": len(original_nodes) if original_nodes else 0,
                 }
             )
 
