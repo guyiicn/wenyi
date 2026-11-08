@@ -73,6 +73,16 @@ def validate_inline_preservation_for_export(
                     )
                 continue
 
+            # Check for explicit preservation failure flag
+            if raw_target_inline.get("preservation_failed") or raw_target_inline.get("decode_failed"):
+                issues.append(
+                    f"Chapter {chapter.index}, Segment {segment.index}: "
+                    f"Inline marker preservation failed during translation/polish. "
+                    f"Error: {raw_target_inline.get('error', 'markers lost or corrupted')}. "
+                    f"Retranslate this segment."
+                )
+                continue
+
             # Validate target_inline structure
             ranges = raw_target_inline.get("ranges")
             if not isinstance(ranges, list):
@@ -84,6 +94,17 @@ def validate_inline_preservation_for_export(
                     )
                 continue
 
+            # Check if ranges are empty but source had nodes (preservation failure)
+            if len(ranges) == 0:
+                source_node_count = raw_target_inline.get("source_node_count", 0)
+                if source_node_count > 0 and not allow_proportional_fallback:
+                    issues.append(
+                        f"Chapter {chapter.index}, Segment {segment.index}: "
+                        f"All {source_node_count} inline emphasis markers were lost. "
+                        f"Retranslate or re-polish this segment."
+                    )
+                continue
+
             # Check for validation warnings
             warnings = raw_target_inline.get("validation_warnings")
             if isinstance(warnings, list) and warnings:
@@ -92,7 +113,7 @@ def validate_inline_preservation_for_export(
                     for w in warnings
                     if any(
                         keyword in str(w).lower()
-                        for keyword in ["unclosed", "mismatched", "unmatched"]
+                        for keyword in ["unclosed", "mismatched", "unmatched", "lost"]
                     )
                 ]
                 if critical_warnings and not allow_proportional_fallback:
