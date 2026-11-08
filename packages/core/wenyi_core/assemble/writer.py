@@ -109,7 +109,12 @@ def assemble(
 
     if chapter_count > 0:
         chapters = [view.load_chapter(i) for i in range(chapter_count)]
-        validate_inline_preservation_for_export(chapters, allow_proportional_fallback=False)
+        validate_inline_preservation_for_export(
+            chapters,
+            allow_proportional_fallback=False,
+            source_path=source_path,
+            manifest=m,
+        )
 
     target_lang = _manifest_target_lang(m)
     if out_format == "txt":
