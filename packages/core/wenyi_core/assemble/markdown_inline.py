@@ -2,6 +2,51 @@
 
 from __future__ import annotations
 
+import re
+
+
+def _is_unsafe_markdown_delimiter(
+    text: str, start: int, end: int, marker: str
+) -> bool:
+    """Check if markdown delimiters for range would be invalid per CommonMark.
+    
+    CommonMark emphasis requires flanking rules. Patterns that often fail:
+    1. Emphasized text ends with Chinese punctuation, followed by CJK:
+       *text，*她 -> renders as literal * (punct inside, CJK after)
+    2. Emphasized text starts/ends surrounded by CJK without spaces:
+       汉字*text*汉字 -> may fail
+    
+    Args:
+        text: Full text
+        start: Start position of emphasis range
+        end: End position of emphasis range
+        marker: '*' or '**'
+    
+    Returns True if range is unsafe and should use HTML fallback.
+    """
+    if start < 0 or end > len(text) or start >= end:
+        return True
+    
+    emphasized_text = text[start:end]
+    
+    # Check if emphasized text ends with Chinese punctuation
+    if emphasized_text and emphasized_text[-1] in "，。！？；：""''（）【】《》、":
+        # And followed by CJK character
+        if end < len(text):
+            after = text[end]
+            if "\u4e00" <= after <= "\u9fff":
+                return True
+    
+    # Check if emphasized text starts with Chinese punctuation
+    if emphasized_text and emphasized_text[0] in "，。！？；：""''（）【】《》、":
+        # And preceded by CJK character
+        if start > 0:
+            before = text[start - 1]
+            if "\u4e00" <= before <= "\u9fff":
+                return True
+    
+    return False
+
 
 def insert_markdown_emphasis(
     text: str,
@@ -10,6 +55,7 @@ def insert_markdown_emphasis(
     """Insert markdown * and ** markers based on target_inline ranges.
     
     Uses event-based algorithm to handle nested ranges correctly.
+    Falls back to HTML <em>/<strong> for unsafe CommonMark delimiters.
 
     Args:
         text: Plain translated text
@@ -58,21 +104,46 @@ def insert_markdown_emphasis(
     if not valid_ranges:
         return text
     
-    # Build events: (position, is_end, marker)
-    # is_end=False for START, is_end=True for END
-    events = []
+    # Separate ranges into markdown-safe and HTML-fallback
+    markdown_ranges = []
+    html_ranges = []
+    
     for start, end, marker in valid_ranges:
-        events.append((start, False, marker))
-        events.append((end, True, marker))
+        # Check if delimiters would be unsafe per CommonMark
+        if _is_unsafe_markdown_delimiter(text, start, end, marker):
+            # Use HTML tag
+            if marker == "*":
+                tag = "em"
+            elif marker == "**":
+                tag = "strong"
+            else:
+                tag = "span"  # Fallback
+            html_ranges.append((start, end, tag))
+        else:
+            # Safe for markdown
+            markdown_ranges.append((start, end, marker))
     
-    # Sort events: by position, then END before START at same position
-    # This ensures proper nesting: when tags share boundary, outer closes last
-    events.sort(key=lambda e: (e[0], e[1]))
-    
-    # Insert markers from back to front to preserve positions
+    # Process HTML ranges first (they don't interact with markdown syntax)
     result = text
-    for pos, is_end, marker in reversed(events):
-        if 0 <= pos <= len(result):
-            result = result[:pos] + marker + result[pos:]
+    for start, end, tag in reversed(html_ranges):
+        # Insert from back to preserve positions
+        result = result[:end] + f"</{tag}>" + result[end:]
+        result = result[:start] + f"<{tag}>" + result[start:]
+    
+    # Process markdown ranges if any
+    if markdown_ranges:
+        # Build events for markdown ranges
+        events = []
+        for start, end, marker in markdown_ranges:
+            events.append((start, False, marker))
+            events.append((end, True, marker))
+        
+        # Sort events: by position, then END before START at same position
+        events.sort(key=lambda e: (e[0], e[1]))
+        
+        # Insert markers from back to front
+        for pos, is_end, marker in reversed(events):
+            if 0 <= pos <= len(result):
+                result = result[:pos] + marker + result[pos:]
     
     return result
