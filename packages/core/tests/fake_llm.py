@@ -55,6 +55,32 @@ def routing_handler(messages, tier, json_mode):
                 match = re.search(r"exactly (\d+) items", user)
                 n = int(match.group(1)) if match else 0
             return json.dumps({"polished": [f"润{i}" for i in range(n)]}, ensure_ascii=False)
+        
+        # Preserve inline markers while translating
+        paragraphs = re.findall(r"^\[(\d+)\]\s*(.+?)$", user, re.MULTILINE)
+        if paragraphs:
+            translations = []
+            for idx, text in paragraphs:
+                # Split by markers
+                marker_pattern = r"(\[\[[A-Z_0-9]+_(?:START|END)\]\])"
+                parts = re.split(marker_pattern, text)
+                
+                result = []
+                for part in parts:
+                    if re.match(marker_pattern, part):
+                        # Keep marker as-is
+                        result.append(part)
+                    elif part.strip():
+                        # Simple translation: use 译 prefix
+                        result.append(f"译{idx}")
+                    else:
+                        result.append(part)
+                
+                translations.append("".join(result))
+            
+            return json.dumps({"translations": translations}, ensure_ascii=False)
+        
+        # Fallback for non-numbered format
         n = _count_numbered(user)
         return json.dumps({"translations": [f"译{i}" for i in range(n)]}, ensure_ascii=False)
 

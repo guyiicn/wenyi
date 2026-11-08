@@ -473,8 +473,8 @@ def _replace_block_content(
             end = range_info.get("end")
             if not (isinstance(tag, str) and isinstance(start, int) and isinstance(end, int)):
                 continue
-            # Only emphasis tags need nesting support
-            if tag in ("em", "strong", "i", "b"):
+            # Emphasis tags AND CSS emphasis spans need nesting support
+            if tag in ("em", "strong", "i", "b", "span"):
                 # Find the corresponding node
                 matched = False
                 for target_offset, order, node in restored:
