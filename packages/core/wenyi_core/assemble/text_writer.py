@@ -10,9 +10,12 @@ import re
 import shutil
 import zipfile
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urljoin
 
-from ..models.document import KIND_HEADING
+from bs4 import BeautifulSoup, UnicodeDammit
+
+from ..markup.contracts import INLINE_ID_ATTR, INLINE_META_KEY
+from ..models.document import KIND_HEADING, Segment
 from .export_view import AssembleStore
 from .writer_common import _bilingual_source, _merged_paragraphs, _ordered_pair
 
@@ -26,11 +29,130 @@ def _safe_filename(name: str, fallback: str = "file") -> str:
     return safe if safe else fallback
 
 
+def _normalize_epub_href(base_href: str, img_src: str) -> str:
+    """Resolve relative image href against EPUB resource base."""
+    if not img_src:
+        return ""
+    # Handle absolute paths
+    if img_src.startswith('/'):
+        return img_src.lstrip('/')
+    # Resolve relative to resource directory
+    base_dir = os.path.dirname(base_href)
+    joined = urljoin(base_dir + '/', img_src)
+    # Remove leading './' and normalize
+    normalized = joined.replace('\\', '/').lstrip('./')
+    return normalized
+
+
+def _extract_segment_images_from_epub(
+    source_path: str,
+    chapters: list,
+    meta: dict[str, object],
+) -> dict[tuple[int, int], list[tuple[str, str, str]]]:
+    """Extract segment-level image info: (chapter_idx, segment_idx) -> [(inline_id, src, alt)]."""
+    if not os.path.exists(source_path) or not source_path.lower().endswith('.epub'):
+        return {}
+    
+    segment_images: dict[tuple[int, int], list[tuple[str, str, str]]] = {}
+    
+    try:
+        with zipfile.ZipFile(source_path, 'r') as zf:
+            # Get resource specs
+            raw_resources = meta.get("epub_resources")
+            if not isinstance(raw_resources, list):
+                return {}
+            
+            resource_hrefs: dict[str, str] = {}
+            for res in raw_resources:
+                if not isinstance(res, dict):
+                    continue
+                href = res.get("href")
+                if isinstance(href, str) and href:
+                    resource_hrefs[href] = href
+            
+            # Build segment -> resource mapping
+            segment_to_resource: dict[tuple[int, int], str] = {}
+            for ch in chapters:
+                for seg in ch.segments:
+                    if isinstance(seg, Segment) and seg.resource_href:
+                        segment_to_resource[(ch.index, seg.index)] = seg.resource_href
+            
+            # Parse each resource and extract image metadata
+            for href in resource_hrefs.keys():
+                if href not in zf.namelist():
+                    continue
+                
+                try:
+                    source_data = zf.read(href)
+                    html = UnicodeDammit(source_data).unicode_markup
+                    if html is None:
+                        html = source_data.decode("utf-8", errors="replace")
+                    
+                    soup = BeautifulSoup(html, "html.parser")
+                    
+                    # Find all img tags with inline IDs
+                    for img in soup.find_all("img"):
+                        inline_id = img.get(INLINE_ID_ATTR)
+                        if not isinstance(inline_id, str):
+                            continue
+                        
+                        src = img.get("src", "")
+                        alt = img.get("alt", "")
+                        
+                        if not src:
+                            continue
+                        
+                        # Resolve relative src
+                        normalized_src = _normalize_epub_href(href, str(src))
+                        
+                        # Find which segment owns this inline_id
+                        for (ch_idx, seg_idx), res_href in segment_to_resource.items():
+                            if res_href != href:
+                                continue
+                            
+                            # Check if segment has this inline_id in its metadata
+                            ch = next((c for c in chapters if c.index == ch_idx), None)
+                            if not ch:
+                                continue
+                            
+                            seg = next((s for s in ch.segments if s.index == seg_idx), None)
+                            if not seg or not isinstance(seg, Segment):
+                                continue
+                            
+                            raw_inline = seg.meta.get(INLINE_META_KEY)
+                            if not isinstance(raw_inline, dict):
+                                continue
+                            
+                            raw_nodes = raw_inline.get("nodes")
+                            if not isinstance(raw_nodes, list):
+                                continue
+                            
+                            # Check if this inline_id belongs to this segment
+                            if any(
+                                isinstance(node, dict) and node.get("id") == inline_id
+                                for node in raw_nodes
+                            ):
+                                key = (ch_idx, seg_idx)
+                                if key not in segment_images:
+                                    segment_images[key] = []
+                                segment_images[key].append((inline_id, normalized_src, str(alt)))
+                
+                except Exception:
+                    # Skip failed resources
+                    continue
+    
+    except Exception:
+        # If EPUB read fails, return empty
+        return {}
+    
+    return segment_images
+
+
 def _extract_images_from_epub(
     source_path: str,
     assets_dir: str,
 ) -> dict[str, str]:
-    """Extract images from EPUB to assets directory, return mapping of original path to MD path."""
+    """Extract images from EPUB to assets directory, return mapping of normalized EPUB path to MD path."""
     if not os.path.exists(source_path) or not source_path.lower().endswith('.epub'):
         return {}
     
@@ -43,7 +165,7 @@ def _extract_images_from_epub(
             for info in zf.infolist():
                 # Check for image extensions
                 lower_name = info.filename.lower()
-                if not any(lower_name.endswith(ext) for ext in ('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp')):
+                if not any(lower_name.endswith(ext) for ext in ('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp')):
                     continue
                 
                 # Get base name
@@ -66,8 +188,7 @@ def _extract_images_from_epub(
                 with open(target_path, 'wb') as f:
                     f.write(zf.read(info.filename))
                 
-                # Map original EPUB path to MD relative path
-                # Normalize EPUB path separators
+                # Map normalized EPUB path to MD relative path
                 normalized_epub_path = info.filename.replace('\\', '/')
                 image_map[normalized_epub_path] = f"assets/{final_name}"
     
@@ -88,33 +209,68 @@ def _assemble_plain_text(
 ) -> str:
     """Shared text/Markdown implementation; prefix headings with # when markdown=True."""
     m = store.load_manifest()
+    raw_meta = m.get("meta")
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
     
     # Extract images for Markdown
     image_map: dict[str, str] = {}
+    segment_images: dict[tuple[int, int], list[tuple[str, str, str]]] = {}
+    
     if markdown:
         source_path = m.get("source_path")
         if isinstance(source_path, str) and source_path:
             # Create assets directory next to output
             out_dir = os.path.dirname(os.path.abspath(out_path))
             assets_dir = os.path.join(out_dir, "assets")
+            
+            # Load chapters for image extraction
+            chapters = [store.load_chapter(c["index"]) for c in m["chapters"]]
+            
+            # Extract image files and metadata
             image_map = _extract_images_from_epub(source_path, assets_dir)
+            segment_images = _extract_segment_images_from_epub(source_path, chapters, meta)
     
     chapter_blocks: list[str] = []
     for c in m["chapters"]:
         ch = store.load_chapter(c["index"])
         blocks: list[str] = []
+        
         for kind, target, source, level in _merged_paragraphs(ch):
+            paragraph_parts: list[str] = []
+            
+            # Handle heading formatting
             if kind == KIND_HEADING and markdown:
                 target = "#" * min(level, 6) + " " + target
+            
+            # Add target text
+            paragraph_parts.append(target)
+            
+            # Add bilingual source if requested
             src = _bilingual_source(source, target) if (bilingual and kind != KIND_HEADING) else ""
+            
+            # Insert images after paragraph (simplified placement for now)
+            if markdown and kind != KIND_HEADING:
+                # Find first segment of this paragraph to check for images
+                for seg in ch.segments:
+                    if seg.target == target or (seg.cont and seg.target in target):
+                        key = (ch.index, seg.index)
+                        if key in segment_images:
+                            for inline_id, norm_src, alt in segment_images[key]:
+                                md_path = image_map.get(norm_src, "")
+                                if md_path:
+                                    alt_text = alt if alt else "Image"
+                                    paragraph_parts.append(f"![{alt_text}]({md_path})")
+                        break
+            
+            # Assemble final paragraph
             if not src:
-                blocks.append(target)
+                blocks.append("\n\n".join(paragraph_parts))
             else:
                 first, second = _ordered_pair(src, target, order)
                 blocks.extend((first, second))
-        
-        # TODO: Add image references in markdown (requires segment-level image tracking)
-        # For now, images are extracted but not referenced in the text
+                # Add images after bilingual pair
+                if len(paragraph_parts) > 1:
+                    blocks.extend(paragraph_parts[1:])
         
         chapter_blocks.append("\n\n".join(blocks))
     
