@@ -461,11 +461,39 @@ def _replace_block_content(
 
         restored.append((target_offset, len(nodes) + order, node))
 
+    # Convert nested emphasis tags to ranges to preserve nesting
+    emphasis_ranges: list[tuple[int, int, int, Tag, list[Tag]]] = []
+    if verified_ranges:
+        # Group by position to detect nesting
+        for idx, range_info in enumerate(verified_ranges):
+            if not isinstance(range_info, dict):
+                continue
+            tag = range_info.get("tag")
+            start = range_info.get("start")
+            end = range_info.get("end")
+            if not (isinstance(tag, str) and isinstance(start, int) and isinstance(end, int)):
+                continue
+            # Only emphasis tags need nesting support
+            if tag in ("em", "strong", "i", "b"):
+                # Find the corresponding node
+                for target_offset, order, node in restored:
+                    if node.name == tag and abs(target_offset - start) < 3:  # tolerance for rounding
+                        # Create a range entry
+                        emphasis_ranges.append((start, end, order, node, []))
+                        break
+    
+    # Remove emphasis tags from restored if they're in emphasis_ranges
+    if emphasis_ranges:
+        emphasis_nodes = {id(node) for _, _, _, node, _ in emphasis_ranges}
+        restored = [(offset, order, node) for offset, order, node in restored if id(node) not in emphasis_nodes]
+
     # Extract ordinary inline nodes first: range links may contain images, which become inaccessible
     # after the link root has been extracted and cleared.
     annotation_points, annotation_ranges, annotation_fallbacks = _annotation_restorations(
         el, text, meta
     )
+    # Merge emphasis ranges with annotation ranges
+    all_ranges = list(annotation_ranges) + emphasis_ranges
     # Use stable shared ordering for annotations and inline nodes, with point annotations first at ties.
     restored = list(annotation_points) + restored
 
@@ -474,7 +502,7 @@ def _replace_block_content(
         el,
         text,
         restored,
-        annotation_ranges,
+        all_ranges,
         annotation_fallbacks,
         nested=bool(meta.get(HTML_MARKUP_META_KEY)),
     )

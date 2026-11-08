@@ -264,6 +264,10 @@ def test_comprehensive_css_span_with_nesting_and_anchors():
         target_inline_2 = p2.meta.get("target_inline")
         if target_inline_2:
             ranges_2 = target_inline_2.get("ranges", [])
+            # DEBUG
+            import sys
+            print(f"\nDEBUG p2 target: {p2.target}", file=sys.stderr)
+            print(f"DEBUG p2 ranges: {ranges_2}", file=sys.stderr)
             # Check nested em/strong have ranges
             em_ranges = [r for r in ranges_2 if r["tag"] == "em"]
             strong_ranges = [r for r in ranges_2 if r["tag"] == "strong"]

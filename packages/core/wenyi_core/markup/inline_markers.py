@@ -133,15 +133,33 @@ def encode_inline_markers(
         raise ValueError("Inline nodes are not properly nested")
 
     # Encode markers into text
-    # Sort by position (reverse) to insert from end to start
-    sorted_nodes = sorted(inline_nodes, key=lambda n: n.start, reverse=True)
-
+    # Build events list: (position, event_type, node)
+    # event_type: 0=START, 1=END
+    events: list[tuple[int, int, InlineNode]] = []
+    for node in inline_nodes:
+        events.append((node.start, 0, node))  # START event
+        events.append((node.end, 1, node))    # END event
+    
+    # Sort events: by position, then START before END at same position,
+    # but for END events at same position, inner nodes (started later) close first
+    def event_key(event):
+        pos, event_type, node = event
+        if event_type == 0:  # START
+            return (pos, 0, node.start)  # Earlier starts first
+        else:  # END
+            return (pos, 1, -node.start)   # Later starts close first (inner closes before outer)
+    
+    events.sort(key=event_key)
+    
+    # Insert markers from back to front to avoid position shifts
     encoded = text
-    for node in sorted_nodes:
-        # Insert end marker first
-        encoded = encoded[: node.end] + f"[[{node.marker_name}_END]]" + encoded[node.end :]
-        # Insert start marker
-        encoded = encoded[: node.start] + f"[[{node.marker_name}_START]]" + encoded[node.start :]
+    offset = 0
+    for pos, event_type, node in reversed(events):
+        if event_type == 0:  # START
+            marker = f"[[{node.marker_name}_START]]"
+        else:  # END
+            marker = f"[[{node.marker_name}_END]]"
+        encoded = encoded[:pos] + marker + encoded[pos:]
 
     return encoded, inline_nodes
 
