@@ -388,9 +388,14 @@ class TranslationService:
                 self._precision.mark_published(store, result)
             else:
                 result = self._batches.execute(plan, polish=self._runtime.config.pipeline.polish)
-                for segment, target, before_polish in zip(b, result.targets, result.before_polish):
+                for segment, target, before_polish, inline_meta in zip(
+                    b, result.targets, result.before_polish, result.inline_metas or []
+                ):
                     segment.target = target
                     segment.target_before_polish = before_polish
+                    if inline_meta:
+                        # Store verified target inline positions
+                        segment.meta["target_inline"] = inline_meta
                 # Persist translations incrementally so interruption resumes after this batch.
                 store.save_chapter(chapter)
             self._align_batch_context(store, chapter, batch_start, len(b))
