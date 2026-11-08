@@ -182,9 +182,8 @@ class TestOpenAICompatibleReasoningContent(unittest.TestCase):
             reasoning_content=reasoning_content,
         )
 
-        with patch.object(
-            client.adapter("default"), "_ensure_client", return_value=_ClientStub([response])
-        ):
+        client.adapter("default")._credentials = ("test-key",)
+        with _patch_openai_client(_ClientStub([response])):
             self.assertEqual(
                 client.complete(
                     [{"role": "user", "content": "translate"}],
@@ -205,9 +204,8 @@ class TestOpenAICompatibleReasoningContent(unittest.TestCase):
             reasoning_content=reasoning_content,
         )
 
-        with patch.object(
-            client.adapter("default"), "_ensure_client", return_value=_ClientStub([response])
-        ):
+        client.adapter("default")._credentials = ("test-key",)
+        with _patch_openai_client(_ClientStub([response])):
             with self.assertRaisesRegex(EmptyResponseError, "fallback response is invalid JSON"):
                 client.complete_json(
                     [{"role": "user", "content": "translate"}], operation="translation.body"
@@ -222,9 +220,8 @@ class TestOpenAICompatibleReasoningContent(unittest.TestCase):
             finish_reason="length",
         )
 
-        with patch.object(
-            client.adapter("default"), "_ensure_client", return_value=_ClientStub([response])
-        ):
+        client.adapter("default")._credentials = ("test-key",)
+        with _patch_openai_client(_ClientStub([response])):
             with self.assertRaises(RuntimeError):
                 client.complete_json(
                     [{"role": "user", "content": "translate"}], operation="translation.body"
@@ -238,9 +235,8 @@ class TestOpenAICompatibleReasoningContent(unittest.TestCase):
             reasoning_content="不要把这段思考当成译文",
         )
 
-        with patch.object(
-            client.adapter("default"), "_ensure_client", return_value=_ClientStub([response])
-        ):
+        client.adapter("default")._credentials = ("test-key",)
+        with _patch_openai_client(_ClientStub([response])):
             with self.assertRaisesRegex(EmptyResponseError, "content is empty"):
                 client.complete(
                     [{"role": "user", "content": "translate"}], operation="translation.body"
@@ -250,9 +246,8 @@ class TestOpenAICompatibleReasoningContent(unittest.TestCase):
         client = RoutedLLMClient(_minimal_openai_compatible_cfg(reasoning_fallback=True))
         response = _make_response("", None, reasoning_content=" \n ")
 
-        with patch.object(
-            client.adapter("default"), "_ensure_client", return_value=_ClientStub([response])
-        ):
+        client.adapter("default")._credentials = ("test-key",)
+        with _patch_openai_client(_ClientStub([response])):
             with self.assertRaisesRegex(EmptyResponseError, "content is empty"):
                 client.complete_json(
                     [{"role": "user", "content": "translate"}], operation="translation.body"
@@ -300,9 +295,8 @@ class TestOpenAICompatibleReasoningContent(unittest.TestCase):
             reasoning_content="这是一段明显不是 JSON 的推理文本",
         )
 
-        with patch.object(
-            client.adapter("default"), "_ensure_client", return_value=_ClientStub([response])
-        ):
+        client.adapter("default")._credentials = ("test-key",)
+        with _patch_openai_client(_ClientStub([response])):
             self.assertEqual(
                 client.complete(
                     [{"role": "user", "content": "translate"}],
@@ -399,9 +393,8 @@ class TestDeepSeekUsageByTier(unittest.TestCase):
             ),
         ]
         msgs = [{"role": "user", "content": "hi"}]
-        with patch.object(
-            c.adapter("default"), "_ensure_client", return_value=_ClientStub(responses)
-        ):
+        c.adapter("default")._credentials = ("test-key",)
+        with _patch_openai_client(_ClientStub(responses)):
             self.assertEqual(c.complete(msgs, operation="translation.body"), "strong-out")
             self.assertEqual(c.complete(msgs, operation="review.scan"), "cheap-out")
 
@@ -446,11 +439,8 @@ class TestOpenAIUsageNormalization(unittest.TestCase):
         )
         response = _make_response("ok", usage)
 
-        with patch.object(
-            client.adapter("default"),
-            "_ensure_client",
-            return_value=_ClientStub([response]),
-        ):
+        client.adapter("default")._credentials = ("test-key",)
+        with _patch_openai_client(_ClientStub([response])):
             self.assertEqual(
                 client.complete(
                     [{"role": "user", "content": "x"}],
