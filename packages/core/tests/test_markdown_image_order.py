@@ -318,43 +318,35 @@ def test_markdown_image_duplicate_names():
 
 
 def test_markdown_missing_image_files():
-    """Test handling of referenced images that don't exist in EPUB."""
+    """Test that missing image files cause explicit failure."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         epub_path = str(tmp / "test.epub")
         store = FileStorage(str(tmp / "book"))
 
-        # Create EPUB without actual image files
+        # Create EPUB with referenced but missing image files
         html_resources = {
             "chapter1.xhtml": f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>Chapter 1</title></head>
 <body>
-  <img src="missing.png" alt="Missing" {INLINE_ID_ATTR}="img_missing"/>
-  <p {INLINE_ID_ATTR}="p1">Text.</p>
+  <div><img src="missing.png" alt="Missing"/></div>
+  <p>Text.</p>
 </body>
 </html>""",
         }
         _create_test_epub_with_images(epub_path, {}, html_resources)
 
-        seg = Segment(
-            index=0,
-            source="Text.",
-            target="文字。",
-            resource_href="chapter1.xhtml",
-            meta={
-                INLINE_META_KEY: {
-                    "version": 1,
-                    "source_length": 5,
-                    "nodes": [
-                        {"id": "img_missing", "tag": "img", "placement": "block"},
-                    ],
-                }
-            },
-        )
+        # Ingest EPUB
+        from wenyi_core.ingest.epub_reader import read_epub
+        doc = read_epub(epub_path, source_lang="en", target_lang="zh")
+        
+        # Translate segments
+        for seg in doc.chapters[0].segments:
+            seg.target = "文字。"
 
-        chapter = Chapter(index=0, title="Test", segments=[seg])
+        chapter = doc.chapters[0]
         store.save_chapter(chapter)
 
         manifest = {
@@ -365,15 +357,17 @@ def test_markdown_missing_image_files():
             "chapter_count": 1,
             "source_sha256": "test123",
             "chapters": [{"index": 0, "title": "Test", "status": "done"}],
-            "meta": {"epub_resources": [{"href": "chapter1.xhtml"}]},
+            "meta": doc.meta,
         }
         store.save_manifest(manifest)
 
-        # Assemble should succeed but skip missing images
+        # Assemble should fail with FileNotFoundError
         out_md = str(tmp / "output.md")
-        assemble(store, epub_path, out_path=out_md, out_format="markdown")
-
-        md_content = Path(out_md).read_text(encoding="utf-8")
-        # Missing images should not appear in output
-        assert "missing.png" not in md_content
-        assert "文字。" in md_content
+        with pytest.raises(FileNotFoundError) as exc_info:
+            assemble(store, epub_path, out_path=out_md, out_format="markdown")
+        
+        error_msg = str(exc_info.value)
+        assert "missing.png" in error_msg
+        assert "Required image files missing" in error_msg
+        # Output file should NOT exist
+        assert not Path(out_md).exists()

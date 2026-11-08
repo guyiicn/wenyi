@@ -499,7 +499,7 @@ class TestAssembleEpub(unittest.TestCase):
 
     def test_nested_fragment_id_survives_textual_markup_flattening(self):
         html = '<html><body><h2><span id="inside">Section</span></h2></body></html>'
-        title, segments, template = annotate_epub_resource(html, 0, "chapter.xhtml")
+        title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "chapter.xhtml")
         segments[0].target = "章节"
         chapter = Chapter(
             index=0,
@@ -523,7 +523,7 @@ class TestAssembleEpub(unittest.TestCase):
 <p><em>Hello</em> <a href="note.xhtml">world</a></p>
 <p><ruby>漢字<rt>かんじ</rt></ruby>です</p>
 </body></html>"""
-        title, segments, template = annotate_epub_resource(html, 0, "chapter.xhtml")
+        title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "chapter.xhtml")
         segments[0].target = "你好世界"
         segments[1].target = "汉字如此"
         chapter = Chapter(
@@ -728,7 +728,7 @@ tunnel<sup class="key" id="key-1">〔＊1〕</sup></a> opens.</p></body></html>"
     def test_epub_render_keeps_image_inside_restored_range_link(self):
         html = """<html><body><p>See <a href="#figure"><span id="semantic-id">linked
 <img src="thumb.png"/> phrase</span><sup id="ref-mark">*</sup></a> now.</p></body></html>"""
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         segment = segments[0]
         segment.target = "请看链接短语。"
         phrase = "链接短语"
@@ -878,7 +878,7 @@ data-tn-annotation-id="ann-0" href="notes.xhtml#note-1">border tunnel
     def test_epub_render_keeps_untranslated_annotation_at_source_position(self):
         html = """<html><body><p>Before<sup><a class="noteref"
 href="#n1" id="ref-1">1</a></sup> after.</p></body></html>"""
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         rendered = BeautifulSoup(
             _render_segments_html(template, segments),
@@ -901,7 +901,7 @@ href="#n1" id="ref-1">1</a></sup> after.</p></body></html>"""
         html = """<html><body><p>See <a class="annotated" href="#note-1"
 id="ref-1">border tunnel<sup class="key" id="key-1">〔＊1〕</sup></a>
 now.</p></body></html>"""
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         segments[0].target = "请看国境隧道。"
 
         rendered = BeautifulSoup(
@@ -939,7 +939,7 @@ now.</p></body></html>"""
 </body></html>"""
         for order in ("target_first", "source_first"):
             with self.subTest(order=order):
-                _title, segments, template = annotate_epub_resource(
+                _title, segments, template, _image_blocks = annotate_epub_resource(
                     html,
                     0,
                     "body.xhtml",
@@ -989,7 +989,7 @@ now.</p></body></html>"""
 <p id="body"><a data-tn-annotation-id="ref" href="#note-1">body</a></p>
 <p id="note-1"><a data-tn-annotation-id="back" href="#body">note</a></p>
 </body></html>"""
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         segments[0].target = "正文"
         segments[1].target = "注释"
 
@@ -1242,7 +1242,7 @@ data-tn-annotation-id="ann-0" href="chapter.xhtml#part">Chapter
 <p class="Textbody"><img src="before.jpg"/>Avant<br/>Après<img src="after.jpg"/></p>
 <p class="illustration"><img src="standalone.jpg"/></p>
 </body></html>"""
-        title, segments, template = annotate_epub_resource(
+        title, segments, template, _image_blocks = annotate_epub_resource(
             html,
             0,
             "chapter.xhtml",
@@ -1289,7 +1289,7 @@ data-tn-annotation-id="ann-0" href="chapter.xhtml#part">Chapter
 </ul></li></ul>
 <blockquote><div>Dedication One</div><div>Dedication Two</div></blockquote>
 </body></html>"""
-        title, segments, template = annotate_epub_resource(html, 0, "contents.xhtml")
+        title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "contents.xhtml")
         for segment, target in zip(
             segments,
             ["作者", "第一章", "第二章", "献词一", "献词二"],
@@ -1327,7 +1327,7 @@ data-tn-annotation-id="ann-0" href="chapter.xhtml#part">Chapter
         html = """<html><body><h1>
 Isaac Asimov<br/><br/>Tales of the Black Widowers<br/>
 </h1></body></html>"""
-        title, segments, template = annotate_epub_resource(html, 0, "title.xhtml")
+        title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "title.xhtml")
         self.assertEqual(
             [segment.source for segment in segments],
             ["Isaac Asimov", "Tales of the Black Widowers"],
@@ -1359,7 +1359,7 @@ Isaac Asimov<br/><br/>Tales of the Black Widowers<br/>
 
     def test_bilingual_break_lines_keep_valid_paragraph_structure(self):
         html = "<html><body><p>First<br/>Second</p></body></html>"
-        title, segments, template = annotate_epub_resource(html, 0, "lines.xhtml")
+        title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "lines.xhtml")
         segments[0].target = "第一"
         segments[1].target = "第二"
         chapter = Chapter(
@@ -1387,7 +1387,7 @@ Isaac Asimov<br/><br/>Tales of the Black Widowers<br/>
         html = """<html><body>
 <p><img src="illustration.jpg"/>Texte original.</p>
 </body></html>"""
-        title, segments, template = annotate_epub_resource(
+        title, segments, template, _image_blocks = annotate_epub_resource(
             html,
             0,
             "chapter.xhtml",
