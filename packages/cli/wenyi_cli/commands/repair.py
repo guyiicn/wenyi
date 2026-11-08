@@ -212,11 +212,18 @@ def _apply_target(
 
     if has_source_inline and not new_has_markers:
         # Segment has source inline but new target has no markers
-        # This could lose emphasis - warn but allow (user responsibility)
+        # REJECT: applying plain text would keep stale target_inline causing misaligned emphasis
         typer.echo(
-            "⚠️  Segment has source inline emphasis but new target has no markers", err=True
+            "❌ Segment has source inline emphasis but new target has no markers", err=True
         )
-        typer.echo("   This may lose emphasis. Verify correctness.", err=True)
+        typer.echo(
+            "   Cannot apply: would keep stale target_inline with incorrect positions.", err=True
+        )
+        typer.echo(
+            "   Either include explicit markers [[I_START]]/[[I_END]] or verify no emphasis needed.",
+            err=True,
+        )
+        raise typer.Abort()
 
     if new_has_markers:
         # New target contains literal markers - must decode

@@ -29,13 +29,15 @@ def _is_unsafe_markdown_delimiter(
     
     emphasized_text = text[start:end]
     
-    # Check if emphasized text ends with Chinese punctuation
+    # Check if emphasized text ends with Chinese punctuation followed by CJK
     if emphasized_text and emphasized_text[-1] in "，。！？；：""''（）【】《》、":
-        # And followed by CJK character
+        # Only unsafe if followed by CJK character (not end of text or space)
         if end < len(text):
             after = text[end]
+            # Unsafe only if CJK follows directly
             if "\u4e00" <= after <= "\u9fff":
                 return True
+        # If at end of text or followed by space/punct, it's safe - continue checking other conditions
     
     # Check if emphasized text starts with Chinese punctuation
     if emphasized_text and emphasized_text[0] in "，。！？；：""''（）【】《》、":
@@ -104,46 +106,41 @@ def insert_markdown_emphasis(
     if not valid_ranges:
         return text
     
-    # Separate ranges into markdown-safe and HTML-fallback
-    markdown_ranges = []
-    html_ranges = []
+    # Build insertion events for ALL ranges (HTML and markdown)
+    # Each event: (position, is_end, insertion_text, original_range_index)
+    # Use original text positions throughout - adjust offset as we insert
     
-    for start, end, marker in valid_ranges:
-        # Check if delimiters would be unsafe per CommonMark
-        if _is_unsafe_markdown_delimiter(text, start, end, marker):
-            # Use HTML tag
+    insertion_events = []
+    for idx, (start, end, marker) in enumerate(valid_ranges):
+        # Check if this range needs HTML fallback
+        use_html = _is_unsafe_markdown_delimiter(text, start, end, marker)
+        
+        if use_html:
+            # HTML tags
             if marker == "*":
-                tag = "em"
+                open_tag, close_tag = "<em>", "</em>"
             elif marker == "**":
-                tag = "strong"
+                open_tag, close_tag = "<strong>", "</strong>"
             else:
-                tag = "span"  # Fallback
-            html_ranges.append((start, end, tag))
+                open_tag, close_tag = "<span>", "</span>"
+            
+            # Add events: (position, is_end, text_to_insert, range_idx)
+            insertion_events.append((start, False, open_tag, idx))
+            insertion_events.append((end, True, close_tag, idx))
         else:
-            # Safe for markdown
-            markdown_ranges.append((start, end, marker))
+            # Markdown delimiters
+            insertion_events.append((start, False, marker, idx))
+            insertion_events.append((end, True, marker, idx))
     
-    # Process HTML ranges first (they don't interact with markdown syntax)
+    # Sort events: by position (ascending), then END before START at same position
+    # This ensures proper nesting when ranges share boundaries
+    insertion_events.sort(key=lambda e: (e[0], e[1]))
+    
+    # Insert from back to front to preserve positions
+    # As we insert, track cumulative offset adjustment
     result = text
-    for start, end, tag in reversed(html_ranges):
-        # Insert from back to preserve positions
-        result = result[:end] + f"</{tag}>" + result[end:]
-        result = result[:start] + f"<{tag}>" + result[start:]
-    
-    # Process markdown ranges if any
-    if markdown_ranges:
-        # Build events for markdown ranges
-        events = []
-        for start, end, marker in markdown_ranges:
-            events.append((start, False, marker))
-            events.append((end, True, marker))
-        
-        # Sort events: by position, then END before START at same position
-        events.sort(key=lambda e: (e[0], e[1]))
-        
-        # Insert markers from back to front
-        for pos, is_end, marker in reversed(events):
-            if 0 <= pos <= len(result):
-                result = result[:pos] + marker + result[pos:]
+    for pos, is_end, insert_text, _ in reversed(insertion_events):
+        if 0 <= pos <= len(result):
+            result = result[:pos] + insert_text + result[pos:]
     
     return result

@@ -264,9 +264,9 @@ def test_fix_inline_markers_decodes_literal_markers(test_state: Path):
     assert "target_inline" in seg["meta"]
 
 
-def test_apply_target_preserves_existing_inline(test_state: Path):
-    """Applying plain text to segment with existing target_inline must preserve metadata."""
-    # Segment 20 has existing target_inline
+def test_apply_target_rejects_plain_text_for_inline_segment(test_state: Path):
+    """MUST reject applying plain text to segment with source inline (prevents stale target_inline)."""
+    # Segment 20 has source epub_inline and target_inline
     result = runner.invoke(
         app,
         [
@@ -280,14 +280,16 @@ def test_apply_target_preserves_existing_inline(test_state: Path):
             "--expected-text",
             "有强调文本",
             "--new-target",
-            "修改后文本无标记",  # No markers
+            "修改后文本无标记",  # No markers - UNSAFE for inline segment
         ],
     )
 
-    assert result.exit_code == 0
+    # Must reject with non-zero exit
+    assert result.exit_code != 0
+    output = result.stdout + (result.stderr or "")
+    assert "has source inline" in output or "no markers" in output
 
-    # Verify target changed but target_inline preserved
+    # Verify state unchanged
     chapter = json.loads((test_state / "chapters" / "ch0.json").read_text())
     seg = next(s for s in chapter["segments"] if s["index"] == 20)
-    assert seg["target"] == "修改后文本无标记"
-    # target_inline should still exist (preservation is implementation detail)
+    assert seg["target"] == "有强调文本"  # Original unchanged
