@@ -494,16 +494,19 @@ class TestMissingUsage(unittest.TestCase):
         self.assertEqual(summary["by_stage"], {})
 
     def test_complete_with_none_usage_does_not_count(self):
+        """v1246: isolated client per request, patch OpenAI constructor."""
         cfg = _minimal_deepseek_cfg()
         c = RoutedLLMClient(cfg)
-        with patch.object(
-            c.adapter("default"),
-            "_ensure_client",
-            return_value=_ClientStub([_make_response("ok", None)]),
-        ):
+        
+        # v1246: Set credentials and patch constructor
+        c.adapter("default")._credentials = ("test-key",)
+        stub = _ClientStub([_make_response("ok", None)])
+        
+        with _patch_openai_client(stub):
             self.assertEqual(
                 c.complete([{"role": "user", "content": "x"}], operation="translation.body"), "ok"
             )
+        
         summary = c.usage_summary()
         self.assertEqual(summary["totals"]["calls"], 0)
         self.assertEqual(summary["totals"]["total_tokens"], 0)
