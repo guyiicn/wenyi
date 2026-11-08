@@ -133,7 +133,7 @@ class Translator(Agent):
             n_minus_1=n - 1,
             numbered_source=prompts.numbered(sources),
             next_source=prompts.render_source_reference(next_source),
-        ) + inline_preservation_suffix
+        ) + inline_suffix
         messages: Messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -220,9 +220,9 @@ class Translator(Agent):
 
         # Prepare inline markers
         from ..pipeline.translate.inline_translation import (
-            prepare_sources_with_inline,
             decode_targets_with_inline,
             inline_preservation_prompt_suffix,
+            prepare_sources_with_inline,
         )
 
         segment_metas = segment_metas or [{} for _ in sources]
