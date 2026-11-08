@@ -91,12 +91,12 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             [*resources, *auxiliary_resources],
         )
         chapters, split_strategy, split_toc_path = _logical_chapters(resources, toc_entries)
-        # Rebuild XHTML templates and inline layout deterministically from the original EPUB, not state.
-        # Preserve other format metadata and fields added by later stages unchanged.
+        # Preserve inline metadata for alignment and backfill.
+        # Templates are rebuilt from the original EPUB during export, but inline nodes need
+        # source-to-target alignment after translation.
         for chapter in chapters:
             chapter.template = None
-            for segment in chapter.segments:
-                segment.meta.pop(INLINE_META_KEY, None)
+            # Keep INLINE_META_KEY for alignment; do not discard inline markup information.
 
     return Document(
         title=book_title or os.path.splitext(os.path.basename(path))[0],
