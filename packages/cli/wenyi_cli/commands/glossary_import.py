@@ -16,12 +16,50 @@ from rich.table import Table
 from wenyi_core.glossary.store import GlossaryStore
 from wenyi_core.models.glossary import GlossaryTerm, normalize_term_type
 from wenyi_core.storage.protocol import Storage
+from wenyi_core.storage.run_store import source_sha256
 
 
 class ImportError(Exception):
     """Errors during glossary import validation or execution."""
 
     pass
+
+
+def _initialize_minimal_state(store: Storage, input_path: str, config) -> None:
+    """Initialize minimal manifest for fresh projects to enable glossary import.
+    
+    Creates a minimal valid manifest with source identity but no chapters or analysis.
+    This allows importing glossary before any AI preparation or model calls.
+    Subsequent prepare/translate will complete initialization normally.
+    """
+    if not os.path.exists(input_path):
+        raise ImportError(
+            f"Source file not found: {input_path}. "
+            f"Ensure the file exists before importing glossary."
+        )
+    
+    # Compute source hash for identity tracking
+    digest = source_sha256(input_path)
+    
+    # Create minimal manifest with source identity
+    # This is sufficient for glossary import; prepare/translate will complete initialization
+    minimal_manifest = {
+        "fmt": os.path.splitext(input_path)[1][1:].lower() or "txt",
+        "title": os.path.splitext(os.path.basename(input_path))[0],
+        "source_lang": config.source_lang,
+        "target_lang": config.target_lang,
+        "source_sha256": digest,
+        "chapters": [],  # Will be populated by prepare/translate
+        "glossary_import_only": True,  # Marker for minimal initialization
+    }
+    
+    # Begin initialization with source identity
+    store.begin_initialization(digest)
+    
+    # Save minimal manifest
+    store.save_manifest(minimal_manifest)
+    
+    # Initialization complete - glossary can now be imported
 
 
 def _parse_aliases(text: str) -> list[str]:
@@ -263,6 +301,8 @@ def import_glossary(
     store: Storage,
     file_path: Path,
     *,
+    input_path: str,
+    config,
     source_col: str = "english",
     target_col: str = "preferred_zh_cn",
     type_col: str | None = "type",
@@ -272,14 +312,27 @@ def import_glossary(
     dry_run: bool = False,
     console: Console,
 ) -> dict[str, int]:
-    """Import glossary terms from TSV; validate collisions and return outcome counts."""
-    if not store.exists():
-        raise ImportError(
-            "No translation state found. Run `wenyi translate` or `wenyi prepare` first "
-            "to initialize the project before importing glossary."
-        )
+    """Import glossary terms from TSV; validate collisions and return outcome counts.
+    
+    For fresh projects without manifest, creates minimal state to enable import before
+    AI preparation. This allows importing frozen terminology before any model calls.
+    """
+    # Import is allowed even without existing state - we'll initialize if needed
+    # This enables the workflow: import first, then prepare/translate with seeded glossary
 
     file_hash = _compute_file_hash(file_path)
+
+    # For fresh projects, ensure minimal manifest exists before import
+    # This allows importing glossary before any AI preparation or model calls
+    if not store.exists():
+        if dry_run:
+            console.print(
+                "[yellow]Dry-run on fresh project (no state yet). "
+                "Actual import will initialize minimal state.[/]"
+            )
+        else:
+            console.print("Initializing fresh project for glossary import...")
+            _initialize_minimal_state(store, input_path, config)
 
     # Check idempotency
     import_key = f"glossary/imports/{file_hash}.json"
@@ -365,11 +418,13 @@ def register_import_command(app: typer.Typer, context) -> None:
 
         try:
             config = context().load_config()
-            store = runstore_for_cli(config, input, console=console)
+            store = runstore_for_cli(config, input, console=console, allow_missing=True)
 
             results = import_glossary(
                 store,
                 file,
+                input_path=input,
+                config=config,
                 source_col=source_col,
                 target_col=target_col,
                 type_col=type_col if type_col else None,
