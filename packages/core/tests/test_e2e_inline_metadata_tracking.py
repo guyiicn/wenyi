@@ -235,12 +235,12 @@ def test_track_inline_metadata_through_pipeline():
                     f"Source: {seg.source[:50]}, Target: {seg.target[:50] if seg.target else None}"
                 )
                 assert isinstance(target_inline, dict), "target_inline must be dict"
-                assert "items" in target_inline, "target_inline must have items"
+                assert "ranges" in target_inline, "target_inline must have ranges"
 
         print("\n=== Step 4: Verify Export ===")
         # Export Markdown
         md_path = str(tmp / "output.md")
-        orch.run_assemble(store, out_path=md_path, out_format="markdown")
+        orch.run_assemble(epub_path, out_path=md_path, out_format="markdown")
 
         md_content = Path(md_path).read_text(encoding="utf-8")
         print(f"Markdown length: {len(md_content)}")
@@ -248,7 +248,7 @@ def test_track_inline_metadata_through_pipeline():
 
         # Export EPUB
         epub_out = str(tmp / "output.epub")
-        orch.run_assemble(store, out_path=epub_out, out_format="epub")
+        orch.run_assemble(epub_path, out_path=epub_out, out_format="epub")
 
         with zipfile.ZipFile(epub_out, "r") as zf:
             ch_html = zf.read("OEBPS/c1.xhtml").decode("utf-8")
