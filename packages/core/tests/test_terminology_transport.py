@@ -2,7 +2,7 @@
 
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from wenyi_core.agents.terminology import TerminologyAgent, TerminologyReferenceError
@@ -23,6 +23,7 @@ def response(content, finish_reason="stop"):
 
 
 def mocked_client(monkeypatch, *, kind="deepseek", explicit=None, retries=1):
+    """Create mocked client for v1246 isolated client per request."""
     config = Config.from_dict({"llm": {"preset": "deepseek"}})
     raw = config.llm.model_dump()
     raw["providers"]["default"]["kind"] = kind
@@ -36,10 +37,16 @@ def mocked_client(monkeypatch, *, kind="deepseek", explicit=None, retries=1):
             model["max_output_tokens"] = explicit
     config = Config.from_dict({"llm": raw})
     client = RoutedLLMClient(config.llm)
+    
+    # v1246: Create mock SDK with close() method
     sdk = MagicMock()
-    client.adapter("default")._client = sdk
+    sdk.close = MagicMock()
+    
+    # Set credentials for isolated client creation
+    client.adapter("default")._credentials = ("test-key",)
+    
     monkeypatch.setattr(client.limits, "wait_for_retry", lambda delay: None)
-    return config, client, sdk.chat.completions.create
+    return config, client, sdk, sdk.chat.completions.create
 
 
 @pytest.mark.parametrize(
@@ -53,10 +60,14 @@ def mocked_client(monkeypatch, *, kind="deepseek", explicit=None, retries=1):
     ],
 )
 def test_plain_deepseek_preset_wire_output_limits(monkeypatch, operation, limit):
-    _, client, create = mocked_client(monkeypatch)
+    _, client, sdk, create = mocked_client(monkeypatch)
     create.return_value = response("{}")
     assert client.routes[operation].max_output_tokens == limit
-    assert client.complete([], operation=operation, json_mode=True) == "{}"
+    
+    # v1246: Patch OpenAI constructor for isolated client per request
+    with patch('openai.OpenAI', return_value=sdk):
+        assert client.complete([], operation=operation, json_mode=True) == "{}"
+    
     kwargs = create.call_args.kwargs
     if limit is None:
         assert "max_tokens" not in kwargs
@@ -68,9 +79,13 @@ def test_plain_deepseek_preset_wire_output_limits(monkeypatch, operation, limit)
 
 @pytest.mark.parametrize("operation", ["terminology.evidence", "synopsis.chapter", "synopsis.book"])
 def test_explicit_profile_limit_overrides_call_hints(monkeypatch, operation):
-    _, client, create = mocked_client(monkeypatch, explicit=4096)
+    _, client, sdk, create = mocked_client(monkeypatch, explicit=4096)
     create.return_value = response("{}")
-    client.complete([], operation=operation, max_tokens=16000)
+    
+    # v1246: Patch OpenAI constructor
+    with patch('openai.OpenAI', return_value=sdk):
+        client.complete([], operation=operation, max_tokens=16000)
+    
     assert client.routes[operation].max_output_tokens == 4096
     assert create.call_args.kwargs["max_tokens"] == 4096
 
@@ -78,14 +93,18 @@ def test_explicit_profile_limit_overrides_call_hints(monkeypatch, operation):
 @pytest.mark.parametrize("kind", ["deepseek", "openai-compatible"])
 @pytest.mark.parametrize("content", ["not JSON", '{"note":"Complete but missing citations"}'])
 def test_length_precedes_json_and_reference_validation_and_counts_usage(monkeypatch, kind, content):
-    config, client, create = mocked_client(monkeypatch, kind=kind)
+    config, client, sdk, create = mocked_client(monkeypatch, kind=kind)
     create.return_value = response(content, "length")
     worker = TerminologyAgent(client, config)
-    with pytest.raises(TruncatedResponseError):
-        worker.enrich(
-            GlossaryTerm("Ann", "安"),
-            [SourcePassage(reference="r1", chapter=0, segment=0, source="Ann arrived.")],
-        )
+    
+    # v1246: Patch OpenAI constructor
+    with patch('openai.OpenAI', return_value=sdk):
+        with pytest.raises(TruncatedResponseError):
+            worker.enrich(
+                GlossaryTerm("Ann", "安"),
+                [SourcePassage(reference="r1", chapter=0, segment=0, source="Ann arrived.")],
+            )
+    
     assert create.call_count == 1
     assert client.usage_summary()["totals"]["calls"] == 1
     assert client.usage_summary()["totals"]["total_tokens"] == 10
@@ -93,11 +112,15 @@ def test_length_precedes_json_and_reference_validation_and_counts_usage(monkeypa
 
 @pytest.mark.parametrize("operation", ["synopsis.chapter", "synopsis.book"])
 def test_synopsis_length_retries_and_counts_both_responses(monkeypatch, operation):
-    _, client, create = mocked_client(monkeypatch)
+    _, client, sdk, create = mocked_client(monkeypatch)
     create.side_effect = [response("Partial", "length"), response("Complete summary.")]
     events = []
     client.set_event_sink(lambda event, **data: events.append({"event": event, **data}))
-    assert client.complete([], operation=operation) == "Complete summary."
+    
+    # v1246: Patch OpenAI constructor
+    with patch('openai.OpenAI', return_value=sdk):
+        assert client.complete([], operation=operation) == "Complete summary."
+    
     assert create.call_count == 2
     assert client.usage_summary()["totals"]["total_tokens"] == 20
     starts = [event for event in events if event["event"] == "llm_request_started"]
@@ -107,14 +130,18 @@ def test_synopsis_length_retries_and_counts_both_responses(monkeypatch, operatio
 
 @pytest.mark.parametrize("refs", [[], ["outside"]])
 def test_completed_evidence_reference_error_is_not_transport_truncation(monkeypatch, refs):
-    config, client, create = mocked_client(monkeypatch)
+    config, client, sdk, create = mocked_client(monkeypatch)
     create.return_value = response(json.dumps({"note": "Ann arrived.", "evidence_refs": refs}))
     worker = TerminologyAgent(client, config)
-    with pytest.raises(TerminologyReferenceError) as failure:
-        worker.enrich(
-            GlossaryTerm("Ann", "安"),
-            [SourcePassage(reference="r1", chapter=0, segment=0, source="Ann arrived.")],
-        )
+    
+    # v1246: Patch OpenAI constructor
+    with patch('openai.OpenAI', return_value=sdk):
+        with pytest.raises(TerminologyReferenceError) as failure:
+            worker.enrich(
+                GlossaryTerm("Ann", "安"),
+                [SourcePassage(reference="r1", chapter=0, segment=0, source="Ann arrived.")],
+            )
+    
     assert not isinstance(failure.value, TruncatedResponseError)
     assert failure.value.reason == ("outside_input" if refs else "missing")
     assert create.call_count == 1
