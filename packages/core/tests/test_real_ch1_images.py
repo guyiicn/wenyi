@@ -41,65 +41,15 @@ def _fake_ch1_handler(messages, tier, json_mode):
 
 
 def test_real_ch1_image_in_markdown():
-    """Test Chapter One with image: image appears once in correct position in MD output."""
+    """Test real Chapter One EPUB: image appears once in correct position in MD output."""
+    real_epub = Path("/home/ubuntu/.cursor/projects/workspace/uploads/Light_of_the_Jedi.Chapter_One.en.epub")
+    
+    if not real_epub.exists():
+        import pytest
+        pytest.skip("Real Chapter One EPUB not available")
+    
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        
-        # Create simple EPUB with image (no inline emphasis to avoid ambiguous match issues)
-        epub_path = tmp / "chapter_with_image.epub"
-        import zipfile
-        
-        with zipfile.ZipFile(epub_path, "w") as zf:
-            zf.writestr("mimetype", "application/epub+zip")
-            zf.writestr(
-                "META-INF/container.xml",
-                """<?xml version="1.0"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>""",
-            )
-            zf.writestr(
-                "OEBPS/content.opf",
-                """<?xml version="1.0"?>
-<package version="3.0" xmlns="http://www.idpf.org/2007/opf">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:title>Test Book</dc:title>
-    <dc:language>en</dc:language>
-  </metadata>
-  <manifest>
-    <item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
-    <item id="img1" href="images/cover.jpg" media-type="image/jpeg"/>
-  </manifest>
-  <spine>
-    <itemref idref="c1"/>
-  </spine>
-</package>""",
-            )
-            # Chapter with title image and plain text paragraphs
-            zf.writestr(
-                "OEBPS/chapter1.xhtml",
-                """<?xml version="1.0"?>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<body>
-<div class="title-image">
-  <img src="images/cover.jpg" alt="Chapter One" />
-</div>
-<p>This is the first paragraph of the chapter.</p>
-<p>This is the second paragraph with some content.</p>
-<p>This is the third paragraph.</p>
-</body>
-</html>""",
-            )
-            # Add a real image file
-            import base64
-            # Minimal valid JPEG (1x1 pixel)
-            jpg_data = base64.b64decode(
-                "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAIBAQIBAQICAgICAgICAwUDAwMDAwYEBAMFBwYHBwcGBwcICQsJCAgKCAcHCg0KCgsMDAwMBwkODw0MDgsMDAz/2wBDAQICAgMDAwYDAwYMCAcIDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAz/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlbaWmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD9/KKKKAP/2Q=="
-            )
-            zf.writestr("OEBPS/images/cover.jpg", jpg_data)
-        
         state_dir = str(tmp / "state")
         
         config = Config.from_dict({
@@ -114,14 +64,11 @@ def test_real_ch1_image_in_markdown():
             "paths": {"state_dir": state_dir},
         })
         
-        from wenyi_core.llm.providers.fake import FakeClient
-        from tests.fake_llm import routing_handler
-        
-        client = FakeClient(handler=routing_handler)
+        client = FakeClient(handler=_fake_ch1_handler)
         orch = Orchestrator(config, client=client)
         
-        # Run translation
-        store = orch.run(str(epub_path))
+        # Run translation - creates NEW state with inline metadata
+        store = orch.run(str(real_epub))
         
         # Verify chapter structure
         manifest = store.load_manifest()
@@ -130,9 +77,9 @@ def test_real_ch1_image_in_markdown():
         
         chapter = store.load_chapter(0)
         
-        # Verify has text segments
+        # Verify 71 text segments (real Chapter One)
         text_segs = [s for s in chapter.segments if s.kind == "text"]
-        assert len(text_segs) >= 3, f"Expected at least 3 text segments, got {len(text_segs)}"
+        assert len(text_segs) == 71, f"Expected 71 text segments, got {len(text_segs)}"
         
         # Check image_blocks in metadata
         image_blocks = chapter.meta.get("image_blocks")
@@ -172,9 +119,9 @@ def test_real_ch1_image_in_markdown():
             for pos, count in pos_counts.items():
                 assert count == 1, f"Image at position {pos} appears {count} times (duplicate)"
         
-        # Export Markdown
+        # Export Markdown - should succeed with new reliable state
         md_path = str(tmp / "output.md")
-        orch.run_assemble(str(epub_path), out_path=md_path, out_format="markdown")
+        orch.run_assemble(str(real_epub), out_path=md_path, out_format="markdown")
         
         md_content = Path(md_path).read_text(encoding="utf-8")
         print(f"\n=== Markdown content (first 500 chars) ===")
@@ -204,7 +151,7 @@ def test_real_ch1_image_in_markdown():
         import hashlib
         # Extract from EPUB to compare
         import zipfile
-        with zipfile.ZipFile(epub_path, "r") as zf:
+        with zipfile.ZipFile(real_epub, "r") as zf:
             jpg_files = [n for n in zf.namelist() if n.endswith(".jpg")]
             assert len(jpg_files) >= 1, "No jpg in original EPUB"
             
@@ -219,14 +166,39 @@ def test_real_ch1_image_in_markdown():
             assert exported_hash == original_hash, \
                 f"Image hash mismatch: original={original_hash[:16]}... exported={exported_hash[:16]}..."
         
-        # Verify MD content is not empty
-        assert len(md_content.strip()) > 0, "MD output should not be empty"
+        # Verify MD title is translated (from fake handler)
+        # Should have "第一章(伪)" not "Chapter One"
+        lines = md_content.split("\n")
+        title_lines = [l for l in lines if l.startswith("#")]
+        
+        if title_lines:
+            first_title = title_lines[0]
+            print(f"\n=== First title line ===\n{first_title}")
+            
+            # Should contain translated title
+            assert "第一章" in first_title or "伪" in first_title, \
+                f"Title not translated: {first_title}"
+            
+            # Should NOT have duplicate English title after translated title
+            # Check next non-empty line
+            title_idx = lines.index(first_title)
+            next_lines = [l.strip() for l in lines[title_idx+1:title_idx+5] if l.strip()]
+            
+            # Should not have "Chapter One" as a separate line after the title
+            for line in next_lines[:2]:  # Check first 2 non-empty lines after title
+                if line.startswith("#"):
+                    continue  # Another heading is ok
+                assert "Chapter One" not in line, \
+                    f"Duplicate English title after translated title: {line}"
 
 
 def test_image_reference_position_matches_source():
     """Verify image appears at correct position matching source structure."""
-    import pytest
-    pytest.skip("Test simplified - covered by test_real_ch1_image_in_markdown with simple EPUB")
+    real_epub = Path("/home/ubuntu/.cursor/projects/workspace/uploads/Light_of_the_Jedi.Chapter_One.en.epub")
+    
+    if not real_epub.exists():
+        import pytest
+        pytest.skip("Real Chapter One EPUB not available")
     
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)

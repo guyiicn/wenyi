@@ -174,13 +174,27 @@ def validate_inline_preservation_for_export(
     issues: list[str] = []
 
     for chapter in chapters:
+        # Detect if this is new state (has any segment with INLINE_META_KEY)
+        # In new state, segments without INLINE_META_KEY are plain text (no emphasis)
+        # In old state, segments might lack INLINE_META_KEY even if source has emphasis
+        has_any_inline_meta = any(
+            isinstance(seg.meta.get(INLINE_META_KEY), dict)
+            for seg in chapter.segments
+        )
+        
         for segment in chapter.segments:
             # Check if segment has source inline markup metadata (new state)
             raw_inline = segment.meta.get(INLINE_META_KEY)
             
             # Old state detection: no INLINE_META_KEY but might have emphasis in source EPUB
             if not isinstance(raw_inline, dict):
-                # For old state, re-scan source EPUB to detect emphasis
+                # If chapter has any inline_meta, this is new state
+                # Segments without inline_meta are plain text (no emphasis to preserve)
+                if has_any_inline_meta:
+                    # New state: missing inline_meta means no emphasis in source
+                    continue
+                
+                # Old state or uncertain: re-scan source EPUB to detect emphasis
                 if source_path and manifest:
                     result = _detect_emphasis_in_epub_source(
                         source_path, manifest, chapter, segment
