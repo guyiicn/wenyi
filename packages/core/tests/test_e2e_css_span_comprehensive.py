@@ -91,23 +91,23 @@ def css_span_handler(messages, tier, json_mode):
     system = messages[0]["content"]
     user = messages[-1]["content"]
     
-    # Translation patterns
+    # Translation patterns (longer phrases first to avoid partial replacement issues)
     translations = {
+        "Target paragraph referenced by anchor.": "这是锚点引用的目标段落。",
         "First paragraph with ": "首段含有",
-        " and ": "及",
-        ".": "。",
-        "CSS italic span": "CSS斜体跨度文本",
-        "CSS bold span": "CSS粗体跨度",
         "Second paragraph with ": "次段包含",
         " and nested ": "与嵌套",
+        "Third paragraph has ": "三段有",
         "plain structural span": "普通结构跨度",
+        "CSS italic inside link": "链接内CSS斜体",
+        "CSS italic span": "CSS斜体跨度文本",
+        "CSS bold span": "CSS粗体跨度",
         "emphasis with ": "强调与",
         "strong inside": "内部强文本",
-        "Third paragraph has ": "三段有",
         "linked ": "已链接的",
-        "CSS italic inside link": "链接内CSS斜体",
         " text": "文字",
-        "Target paragraph referenced by anchor.": "这是锚点引用的目标段落。",
+        " and ": "及",
+        ".": "。",
     }
     
     # Polish modifications
@@ -172,12 +172,6 @@ def css_span_handler(messages, tier, json_mode):
                         translated = part
                         for eng, chi in translations.items():
                             translated = translated.replace(eng, chi)
-                        # If nothing was translated (no markers), fallback to simple translation
-                        if translated == part and not any(marker in text for marker in ["[[", "]]"]):
-                            # Simple paragraph without markers
-                            for eng, chi in translations.items():
-                                part = part.replace(eng, chi)
-                            translated = part if part != text else f"中文{part}"
                         result.append(translated)
                     else:
                         result.append(part)
@@ -264,10 +258,6 @@ def test_comprehensive_css_span_with_nesting_and_anchors():
         target_inline_2 = p2.meta.get("target_inline")
         if target_inline_2:
             ranges_2 = target_inline_2.get("ranges", [])
-            # DEBUG
-            import sys
-            print(f"\nDEBUG p2 target: {p2.target}", file=sys.stderr)
-            print(f"DEBUG p2 ranges: {ranges_2}", file=sys.stderr)
             # Check nested em/strong have ranges
             em_ranges = [r for r in ranges_2 if r["tag"] == "em"]
             strong_ranges = [r for r in ranges_2 if r["tag"] == "strong"]

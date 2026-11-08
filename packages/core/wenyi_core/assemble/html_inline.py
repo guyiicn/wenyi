@@ -476,10 +476,13 @@ def _replace_block_content(
             # Only emphasis tags need nesting support
             if tag in ("em", "strong", "i", "b"):
                 # Find the corresponding node
+                matched = False
                 for target_offset, order, node in restored:
                     if node.name == tag and abs(target_offset - start) < 3:  # tolerance for rounding
                         # Create a range entry
+                        # Note: node was already cleared, will be filled by render_ranges
                         emphasis_ranges.append((start, end, order, node, []))
+                        matched = True
                         break
     
     # Remove emphasis tags from restored if they're in emphasis_ranges
@@ -497,6 +500,8 @@ def _replace_block_content(
     # Use stable shared ordering for annotations and inline nodes, with point annotations first at ties.
     restored = list(annotation_points) + restored
 
+    # Enable nested rendering if we have emphasis ranges that need nesting support
+    has_nesting = bool(meta.get(HTML_MARKUP_META_KEY)) or len(emphasis_ranges) > 0
     _render_text_with_nodes(
         soup,
         el,
@@ -504,7 +509,7 @@ def _replace_block_content(
         restored,
         all_ranges,
         annotation_fallbacks,
-        nested=bool(meta.get(HTML_MARKUP_META_KEY)),
+        nested=has_nesting,
     )
     for marker in self_markers:
         el.append(marker)
