@@ -91,8 +91,8 @@ class TestImageExtraction:
         epub_path = self._create_test_epub(tmp_path)
         assets_dir = tmp_path / "assets"
 
-        # Require all images
-        required_images = {"img1.jpg", "img2.png"}
+        # Require all images (match what fixture creates)
+        required_images = {"OEBPS/images/cover.jpg", "OEBPS/images/diagram.png"}
         image_map = _extract_images_from_epub(str(epub_path), str(assets_dir), required_images)
 
         assert len(image_map) == 2
