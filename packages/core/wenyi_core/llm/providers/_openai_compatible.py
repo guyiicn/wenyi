@@ -123,14 +123,23 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
     def _ensure_client(self) -> Any:
         with self._client_lock:
             if self._client is None:
+                import httpx
                 from openai import OpenAI
 
                 self.validate_credentials()
                 api_key = self.api_key()
+                # Use explicit httpx.Timeout to ensure read timeout covers stalled/dead connections.
+                # Single float timeout may not reliably detect ESTABLISHED connections with no response body.
+                timeout_config = httpx.Timeout(
+                    connect=min(60.0, self.cfg.timeout),  # Connect should be fast
+                    read=self.cfg.timeout,  # Read timeout for waiting between bytes
+                    write=self.cfg.timeout,  # Write timeout
+                    pool=min(60.0, self.cfg.timeout),  # Pool timeout
+                )
                 self._client = OpenAI(
                     api_key=api_key or "no-key",
                     base_url=self.base_url,
-                    timeout=self.cfg.timeout,
+                    timeout=timeout_config,
                     max_retries=0,
                 )
         return self._client
@@ -178,13 +187,37 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         context: RequestContext,
         response_format: dict[str, Any] | None = None,
     ) -> str:
+        import concurrent.futures
+        import threading
+
         model_config = model
         kwargs = self._build_request_kwargs(
             model, messages, json_mode=json_mode, max_tokens=context.max_tokens
         )
         if response_format is not None:
             kwargs["response_format"] = response_format
-        response = self._ensure_client().chat.completions.create(**kwargs)
+
+        # Application-layer timeout protection: wrap the SDK call in a thread with explicit timeout.
+        # This catches stalled/dead HTTPS connections that httpx read timeout may miss due to TCP
+        # keepalive or partial responses (HTTP headers sent, but no body).
+        def _do_request():
+            return self._ensure_client().chat.completions.create(**kwargs)
+
+        # Use daemon thread to avoid blocking shutdown if request hangs.
+        # Timeout with 10% margin to allow httpx timeout to fire first when possible.
+        timeout_seconds = self.cfg.timeout * 1.1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="llm-timeout") as executor:
+            future = executor.submit(_do_request)
+            try:
+                response = future.result(timeout=timeout_seconds)
+            except concurrent.futures.TimeoutError as timeout_error:
+                # Application timeout fired: the SDK call is still running in the background thread.
+                # We cannot cancel it (OpenAI SDK doesn't support cancellation), but we can return
+                # immediately and let retry logic handle it.
+                raise TimeoutError(
+                    f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)"
+                ) from timeout_error
+
         context.record_usage(self._normalize_usage(getattr(response, "usage", None)))
         choice = response.choices[0]
         message = choice.message

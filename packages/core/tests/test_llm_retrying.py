@@ -194,6 +194,8 @@ def test_translation_truncation_uses_alignment_retry_and_paragraph_fallback(trun
 
 
 def test_openai_sdk_retry_is_disabled():
+    import httpx
+
     client = RoutedLLMClient(_config(max_retries=4))
     with (
         patch.dict(os.environ, {"TEST_LLM_KEY": "secret"}),
@@ -203,12 +205,15 @@ def test_openai_sdk_retry_is_disabled():
         assert isinstance(adapter, DeepSeekClient)
         adapter._ensure_client()
 
-    openai_type.assert_called_once_with(
-        api_key="secret",
-        base_url="https://example.invalid/v1",
-        timeout=1,
-        max_retries=0,
-    )
+    # Verify OpenAI SDK is called with max_retries=0 and proper timeout
+    assert openai_type.call_count == 1
+    call_kwargs = openai_type.call_args[1]
+    assert call_kwargs["api_key"] == "secret"
+    assert call_kwargs["base_url"] == "https://example.invalid/v1"
+    assert call_kwargs["max_retries"] == 0
+    # Timeout is now httpx.Timeout object, not float
+    assert isinstance(call_kwargs["timeout"], httpx.Timeout)
+    assert call_kwargs["timeout"].read == 1
 
 
 @pytest.mark.parametrize("timeout", [600, 45])
@@ -216,6 +221,8 @@ def test_configured_timeout_reaches_every_http_client(timeout: float):
     """The connection deadline is what bounds a stalled provider, so it must
     survive the route to the SDK constructor for both the default value and a
     configured one, including a fallback connection reached after failover."""
+    import httpx
+
     client = RoutedLLMClient(
         model_config(
             kind="deepseek",
@@ -233,7 +240,10 @@ def test_configured_timeout_reaches_every_http_client(timeout: float):
         assert isinstance(adapter, DeepSeekClient)
         adapter._ensure_client()
 
-    assert openai_type.call_args.kwargs["timeout"] == timeout
+    # Verify httpx.Timeout object is passed with proper read timeout
+    timeout_arg = openai_type.call_args.kwargs["timeout"]
+    assert isinstance(timeout_arg, httpx.Timeout), f"Expected httpx.Timeout, got {type(timeout_arg)}"
+    assert timeout_arg.read == timeout, f"Expected read timeout {timeout}, got {timeout_arg.read}"
 
 
 def test_transient_error_retries_once_and_records_wait_event():
