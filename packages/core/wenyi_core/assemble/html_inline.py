@@ -413,7 +413,7 @@ def _replace_block_content(
 
         # Clear emphasis tags since their text is already in the target
         # Atomic tags (img, video) keep their original content
-        _EMPHASIS_TAGS = {"i", "em", "strong", "b"}
+        _EMPHASIS_TAGS = {"i", "em", "strong", "b", "span"}
         is_emphasis = isinstance(tag, str) and tag in _EMPHASIS_TAGS
         if is_emphasis:
             node.clear()

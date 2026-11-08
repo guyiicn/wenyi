@@ -32,11 +32,11 @@ class AutofixPublisher:
         if not isinstance(nodes, list) or not nodes:
             return False
         
-        # Count semantic emphasis nodes (em, strong, i, b)
+        # Count semantic emphasis nodes (em, strong, i, b, span with CSS emphasis)
         emphasis_count = sum(
             1
             for node in nodes
-            if isinstance(node, dict) and node.get("tag") in ("i", "em", "strong", "b")
+            if isinstance(node, dict) and node.get("tag") in ("i", "em", "strong", "b", "span")
         )
         
         return emphasis_count > 0

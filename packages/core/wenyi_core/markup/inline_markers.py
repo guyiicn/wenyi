@@ -20,6 +20,7 @@ _TAG_MAP = {
     "em": "EM",
     "strong": "STRONG",
     "b": "B",
+    "span": "SPAN",
 }
 
 _REVERSE_TAG_MAP = {v: k for k, v in _TAG_MAP.items()}

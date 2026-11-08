@@ -29,9 +29,13 @@ from wenyi_core.markup.ruby import RUBY_MARK_LEFT, RUBY_MARK_RIGHT
 from wenyi_core.models.document import KIND_HEADING, KIND_TEXT, Segment
 
 
-def _preserved_inline_roots(block: Tag) -> list[Tag]:
+def _preserved_inline_roots(block: Tag, css_rules: dict[str, dict[str, str]] | None = None) -> list[Tag]:
     """Return nontext nodes for unchanged backfill, preserving text-free wrappers where
     possible.
+    
+    Args:
+        block: Block element to scan for inline nodes
+        css_rules: Optional CSS rules for detecting styled spans
     """
     # Emphasis tags that need inline marker encoding/decoding during translation
     _EMPHASIS_TAGS = {"i", "em", "strong", "b"}
@@ -46,12 +50,19 @@ def _preserved_inline_roots(block: Tag) -> list[Tag]:
             continue
         is_atomic = candidate.name in _ATOMIC_INLINE_TAGS
         is_emphasis = candidate.name in _EMPHASIS_TAGS and candidate.get_text(strip=True)
+        
+        # Check for CSS-styled spans with italic or bold
+        is_css_emphasis = False
+        if candidate.name == "span" and candidate.get_text(strip=True) and css_rules is not None:
+            from .css_emphasis import has_italic_style, has_bold_style
+            is_css_emphasis = has_italic_style(candidate, css_rules) or has_bold_style(candidate, css_rules)
+        
         is_empty_anchor = (
             candidate.name in {"a", "span"}
             and not candidate.get_text(strip=True)
             and (candidate.has_attr("id") or candidate.has_attr("name"))
         )
-        if not is_atomic and not is_emphasis and not is_empty_anchor:
+        if not is_atomic and not is_emphasis and not is_css_emphasis and not is_empty_anchor:
             continue
 
         root = candidate
@@ -101,6 +112,7 @@ def _segment_content(
     block: Tag,
     anchor: str,
     annotation_roots: dict[int, dict[str, object]] | None = None,
+    css_rules: dict[str, dict[str, str]] | None = None,
 ) -> tuple[str, dict[str, object]]:
     """Extract translatable text and assign stable IDs/positions to inline nontext nodes.
     Collapse XHTML formatting whitespace as browsers do. Translation-target selection
@@ -115,7 +127,7 @@ def _segment_content(
             marker_node_ids.update(
                 marker_id for marker_id in raw_marker_ids if isinstance(marker_id, int)
             )
-    roots = _preserved_inline_roots(block)
+    roots = _preserved_inline_roots(block, css_rules)
     root_ids = {id(node) for node in roots}
     text_parts: list[str] = []
     preserved_nodes: list[tuple[Tag, int]] = []
@@ -387,6 +399,10 @@ def annotate_epub_resource(
     writers rebuild identical data-tn-id values even if logical chapter policies change.
     """
     soup = BeautifulSoup(html, "html.parser")
+    
+    # Extract CSS rules for detecting styled spans
+    from .css_emphasis import extract_css_rules_from_epub
+    css_rules = extract_css_rules_from_epub(soup)
     segments: list[Segment] = []
     first_heading: Tag | None = None
     heading_title_parts: list[str] = []
@@ -449,7 +465,7 @@ def annotate_epub_resource(
                 marker.attrs.update(anchor_attrs)
                 descendant.insert_before(marker)
 
-        text, meta = _segment_content(el, anchor, annotations)
+        text, meta = _segment_content(el, anchor, annotations, css_rules)
         if (
             annotations
             and all(annotation.get("mode") == "point" for annotation in annotations.values())
