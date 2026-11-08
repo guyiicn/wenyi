@@ -269,9 +269,9 @@ wenyi glossary resolve book.epub "原文术语" "选择译名"
 wenyi glossary import book.epub --file terms.tsv
 ```
 
-`import` 在翻译前从 TSV 文件导入外部术语。TSV 须含表头行，至少包含源文和目标列
-（默认列名：`english` 和 `preferred_zh_cn`）。可选列包括 `type`、
-`aliases_and_regional`（管道符分隔）、`usage_conflicts`（注释）和 `status`
+`import` 在翻译前从 TSV 文件导入外部术语。**无需 AI 初始化** - 可在 `prepare` 前对新项目执行导入。
+TSV 须含表头行，至少包含源文和目标列（默认列名：`english` 和 `preferred_zh_cn`）。
+可选列包括 `type`、`aliases_and_regional`（管道符分隔）、`usage_conflicts`（注释）和 `status`
 （`verified`/`provisional`）。重复源文条目将被拒绝；与现有译名冲突的条目会被记录但不会静默覆盖。
 使用 `--dry-run` 预览而不写入变更。运行 `wenyi glossary import --help` 查看列映射选项。
 

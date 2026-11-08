@@ -308,8 +308,9 @@ wenyi glossary resolve book.epub "source term" "chosen translation"
 wenyi glossary import book.epub --file terms.tsv
 ```
 
-`import` loads external glossary terms from a TSV file before translation. The
-TSV must have a header row with at minimum source and target columns (defaults:
+`import` loads external glossary terms from a TSV file before translation.
+**No AI initialization required** - import can run on fresh projects before `prepare`.
+The TSV must have a header row with at minimum source and target columns (defaults:
 `english` and `preferred_zh_cn`). Optional columns include `type`, `aliases_and_regional`
 (pipe-separated), `usage_conflicts` (notes), and `status` (`verified`/`provisional`).
 Duplicate source entries are rejected; conflicts with existing translations are
