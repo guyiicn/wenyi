@@ -125,15 +125,15 @@ def _extract_images_from_epub(
     required_images: set[str],
 ) -> dict[str, str]:
     """Extract images from EPUB to assets directory, fail if required images are missing.
-    
+
     Args:
         source_path: Path to EPUB file
         assets_dir: Directory to extract images to
         required_images: Set of normalized EPUB paths that must exist
-    
+
     Returns:
         Mapping of normalized EPUB path to MD relative path
-        
+
     Raises:
         FileNotFoundError: If any required image is missing from EPUB
     """
@@ -227,9 +227,17 @@ def _assemble_plain_text(
             # Load chapters for image extraction
             chapters = [store.load_chapter(c["index"]) for c in m["chapters"]]
 
-            # Extract image files and metadata
-            image_map = _extract_images_from_epub(source_path, assets_dir)
+            # Extract segment images metadata first
             segment_images = _extract_segment_images_from_epub(source_path, chapters, meta)
+
+            # Collect required image paths
+            required_images: set[str] = set()
+            for images_list in segment_images.values():
+                for _inline_id, norm_src, _alt, _placement in images_list:
+                    required_images.add(norm_src)
+
+            # Extract image files with validation
+            image_map = _extract_images_from_epub(source_path, assets_dir, required_images)
 
     chapter_blocks: list[str] = []
     for c in m["chapters"]:
