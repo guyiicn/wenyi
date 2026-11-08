@@ -283,11 +283,21 @@ class AutofixPublisher:
                             row["status"] = "failed"
                             row["reason"] = "inline_preservation_failed_during_autofix"
                     else:
-                        # No inline emphasis, apply normally
-                        segment.target = target
-                        row["status"] = "applied"
-                        applied_positions.append(text_index)
-                        chapter_changed = True
+                        # No inline emphasis metadata - check for literal markers
+                        from ...markup.inline_markers import has_inline_markers
+                        
+                        if has_inline_markers(target):
+                            # Target contains literal [[I_START]]/[[EM_START]] markers but
+                            # no source inline metadata to validate against.
+                            # REJECT this modification to preserve fail-closed inline safety.
+                            row["status"] = "failed"
+                            row["reason"] = "contains_literal_inline_markers_without_metadata"
+                        else:
+                            # No markers - apply normally
+                            segment.target = target
+                            row["status"] = "applied"
+                            applied_positions.append(text_index)
+                            chapter_changed = True
                 else:
                     row["status"] = "failed"
                     row["reason"] = "formal_target_changed"

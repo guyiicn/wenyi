@@ -37,6 +37,11 @@ class InlineNode:
     css_style: str | None = None  # For span: "italic", "bold", or None
 
 
+def has_inline_markers(text: str) -> bool:
+    """Check if text contains literal inline markers like [[I_START]], [[EM_END]], etc."""
+    return bool(_MARKER_PATTERN.search(text))
+
+
 def _validate_nesting(nodes: list[InlineNode]) -> bool:
     """Check if inline nodes are properly nested (not overlapping)."""
     stack: list[InlineNode] = []
