@@ -56,9 +56,6 @@ def _extract_segment_images_from_epub(
 
     try:
         with zipfile.ZipFile(source_path, "r") as zf:
-            # Build inline_id -> (src, alt) mapping from EPUB HTML
-            inline_id_to_img: dict[str, tuple[str, str]] = {}
-
             for ch in chapters:
                 for seg in ch.segments:
                     if not isinstance(seg, Segment) or not seg.resource_href:
@@ -308,14 +305,6 @@ def _assemble_plain_text(
     # Write output file
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(chapter_blocks) + "\n")
-
-    # Transaction: only commit assets after successful write
-    if markdown and os.path.exists(assets_dir_temp):
-        import shutil
-
-        if os.path.exists(assets_dir_final):
-            shutil.rmtree(assets_dir_final)
-        shutil.move(assets_dir_temp, assets_dir_final)
 
     return out_path
 
