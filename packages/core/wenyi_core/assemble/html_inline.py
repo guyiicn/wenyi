@@ -379,12 +379,30 @@ def _replace_block_content(
     if not isinstance(source_length, int) or source_length < 0:
         source_length = 0
 
+    # Check for verified target inline positions
+    raw_target_inline = meta.get("target_inline")
+    target_inline = raw_target_inline if isinstance(raw_target_inline, dict) else {}
+    verified_ranges = target_inline.get("ranges") if target_inline else None
+
+    # Build tag->positions mapping from verified ranges
+    tag_positions: dict[str, list[tuple[int, int]]] = {}
+    if isinstance(verified_ranges, list):
+        for range_info in verified_ranges:
+            if not isinstance(range_info, dict):
+                continue
+            tag = range_info.get("tag")
+            start = range_info.get("start")
+            end = range_info.get("end")
+            if isinstance(tag, str) and isinstance(start, int) and isinstance(end, int):
+                tag_positions.setdefault(tag, []).append((start, end))
+
     restored: list[tuple[int, int, Tag]] = []
     for order, record in enumerate(nodes):
         if not isinstance(record, dict):
             continue
         inline_id = record.get("id")
         offset = record.get("offset")
+        tag = record.get("tag")
         if not isinstance(inline_id, str) or not isinstance(offset, int):
             continue
         node = el.find(True, attrs={INLINE_ID_ATTR: inline_id})
@@ -392,12 +410,24 @@ def _replace_block_content(
             continue
         node.extract()
         node.attrs.pop(INLINE_ID_ATTR, None)
-        if offset <= 0:
-            target_offset = 0
-        elif source_length <= 0 or offset >= source_length:
-            target_offset = len(text)
-        else:
-            target_offset = round(offset * len(text) / source_length)
+
+        # Use verified position if available
+        target_offset = None
+        if isinstance(tag, str) and tag in tag_positions:
+            positions = tag_positions[tag]
+            if positions:
+                start, _end = positions.pop(0)
+                target_offset = start
+
+        # Fallback to proportional mapping
+        if target_offset is None:
+            if offset <= 0:
+                target_offset = 0
+            elif source_length <= 0 or offset >= source_length:
+                target_offset = len(text)
+            else:
+                target_offset = round(offset * len(text) / source_length)
+
         restored.append((target_offset, len(nodes) + order, node))
 
     # Extract ordinary inline nodes first: range links may contain images, which become inaccessible
