@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup, UnicodeDammit
 from ..markup.contracts import INLINE_ID_ATTR, INLINE_META_KEY
 from ..models.document import KIND_HEADING, Segment
 from .export_view import AssembleStore
+from .markdown_inline import insert_markdown_emphasis
 from .writer_common import _bilingual_source, _merged_paragraphs, _ordered_pair
 
 
@@ -240,6 +241,16 @@ def _assemble_plain_text(
 
         for kind, target, source, level in _merged_paragraphs(ch):
             paragraph_parts: list[str] = []
+
+            # Apply markdown emphasis if available
+            if markdown and kind != KIND_HEADING:
+                # Find segment for this paragraph to get target_inline
+                for seg in ch.segments:
+                    if seg.target == target and not seg.cont:
+                        target_inline = seg.meta.get("target_inline")
+                        if target_inline:
+                            target = insert_markdown_emphasis(target, target_inline)
+                        break
 
             # Handle heading formatting
             if kind == KIND_HEADING and markdown:
