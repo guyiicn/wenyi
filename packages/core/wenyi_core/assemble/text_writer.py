@@ -13,10 +13,10 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup, UnicodeDammit
 
 from ..markup.contracts import INLINE_ID_ATTR, INLINE_META_KEY
-from ..models.document import KIND_HEADING, Segment
+from ..models.document import Segment
 from .export_view import AssembleStore
 from .markdown_inline import insert_markdown_emphasis
-from .writer_common import _bilingual_source, _merged_paragraphs, _ordered_pair
+from .writer_common import _bilingual_source, _ordered_pair
 
 
 def _safe_filename(name: str, fallback: str = "file") -> str:
@@ -47,12 +47,12 @@ def _extract_segment_images_from_epub(
     source_path: str,
     chapters: list,
     meta: dict[str, object],
-) -> dict[tuple[int, int], list[tuple[str, str, str]]]:
-    """Extract segment-level image info: (chapter_idx, segment_idx) -> [(inline_id, src, alt)]."""
+) -> dict[tuple[int, int], list[tuple[str, str, str, str]]]:
+    """Extract segment-level image info: (ch_idx, seg_idx) -> [(inline_id, src, alt, placement)]."""
     if not os.path.exists(source_path) or not source_path.lower().endswith(".epub"):
         return {}
 
-    segment_images: dict[tuple[int, int], list[tuple[str, str, str]]] = {}
+    segment_images: dict[tuple[int, int], list[tuple[str, str, str, str]]] = {}
 
     try:
         with zipfile.ZipFile(source_path, "r") as zf:
@@ -126,15 +126,19 @@ def _extract_segment_images_from_epub(
                             if not isinstance(raw_nodes, list):
                                 continue
 
-                            # Check if this inline_id belongs to this segment
-                            if any(
-                                isinstance(node, dict) and node.get("id") == inline_id
-                                for node in raw_nodes
-                            ):
-                                key = (ch_idx, seg_idx)
-                                if key not in segment_images:
-                                    segment_images[key] = []
-                                segment_images[key].append((inline_id, normalized_src, str(alt)))
+                            # Check if this inline_id belongs to this segment and get placement
+                            for node in raw_nodes:
+                                if not isinstance(node, dict):
+                                    continue
+                                if node.get("id") == inline_id:
+                                    placement = node.get("placement", "block")
+                                    key = (ch_idx, seg_idx)
+                                    if key not in segment_images:
+                                        segment_images[key] = []
+                                    segment_images[key].append(
+                                        (inline_id, normalized_src, str(alt), placement)
+                                    )
+                                    break
 
                 except Exception:
                     # Skip failed resources
@@ -239,52 +243,56 @@ def _assemble_plain_text(
         ch = store.load_chapter(c["index"])
         blocks: list[str] = []
 
-        for kind, target, source, level in _merged_paragraphs(ch):
-            paragraph_parts: list[str] = []
+        # Add chapter title page if markdown and chapter has title
+        if markdown and ch.title:
+            blocks.append(f"# {ch.title}")
+
+        # Process segments in order to maintain image/paragraph sequence
+        for seg in ch.segments:
+            if not seg.target:
+                continue
+
+            # Get images for this segment
+            seg_images = segment_images.get((ch.index, seg.index), [])
+
+            # Separate block-level and inline images
+            block_images = []
+            inline_images = []
+            for inline_id, norm_src, alt, placement in seg_images:
+                if placement == "inline":
+                    inline_images.append((inline_id, norm_src, alt, placement))
+                else:
+                    block_images.append((inline_id, norm_src, alt, placement))
+
+            # Fail if inline images are present (not supported in Markdown)
+            if inline_images and markdown:
+                raise ValueError(
+                    f"Chapter {ch.index}, Segment {seg.index}: Inline images within text "
+                    f"are not supported in Markdown export. Found {len(inline_images)} inline "
+                    f"image(s). Please use EPUB format or remove inline images."
+                )
+
+            # Add block-level images before segment text
+            for inline_id, norm_src, alt, placement in block_images:
+                md_path = image_map.get(norm_src, "")
+                if md_path:
+                    alt_text = alt if alt else "Image"
+                    blocks.append(f"![{alt_text}]({md_path})")
 
             # Apply markdown emphasis if available
-            if markdown and kind != KIND_HEADING:
-                # Find segment for this paragraph to get target_inline
-                for seg in ch.segments:
-                    if seg.target == target and not seg.cont:
-                        target_inline = seg.meta.get("target_inline")
-                        if target_inline:
-                            target = insert_markdown_emphasis(target, target_inline)
-                        break
+            target_text = seg.target
+            if markdown and not seg.cont:
+                target_inline = seg.meta.get("target_inline")
+                if target_inline:
+                    target_text = insert_markdown_emphasis(target_text, target_inline)
 
-            # Handle heading formatting
-            if kind == KIND_HEADING and markdown:
-                target = "#" * min(level, 6) + " " + target
-
-            # Add target text
-            paragraph_parts.append(target)
-
-            # Add bilingual source if requested
-            src = _bilingual_source(source, target) if (bilingual and kind != KIND_HEADING) else ""
-
-            # Insert images after paragraph (simplified placement for now)
-            if markdown and kind != KIND_HEADING:
-                # Find first segment of this paragraph to check for images
-                for seg in ch.segments:
-                    if seg.target == target or (seg.cont and seg.target in target):
-                        key = (ch.index, seg.index)
-                        if key in segment_images:
-                            for inline_id, norm_src, alt in segment_images[key]:
-                                md_path = image_map.get(norm_src, "")
-                                if md_path:
-                                    alt_text = alt if alt else "Image"
-                                    paragraph_parts.append(f"![{alt_text}]({md_path})")
-                        break
-
-            # Assemble final paragraph
-            if not src:
-                blocks.append("\n\n".join(paragraph_parts))
+            # Add segment text
+            if bilingual and seg.source:
+                src = _bilingual_source(seg.source, target_text)
+                first, second = _ordered_pair(src, target_text, order)
+                blocks.extend([first, second])
             else:
-                first, second = _ordered_pair(src, target, order)
-                blocks.extend((first, second))
-                # Add images after bilingual pair
-                if len(paragraph_parts) > 1:
-                    blocks.extend(paragraph_parts[1:])
+                blocks.append(target_text)
 
         chapter_blocks.append("\n\n".join(blocks))
 
