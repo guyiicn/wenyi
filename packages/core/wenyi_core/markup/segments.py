@@ -156,6 +156,8 @@ def _segment_content(
                     annotation_events[annotation_id] = (start, raw_length)
                 if id(child) in root_ids:
                     preserved_nodes.append((child, raw_length))
+                    # Still walk the preserved node to extract its text content
+                    walk(child, inside_range=inside_range)
                 elif annotation is not None:
                     continue
                 else:

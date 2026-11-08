@@ -411,15 +411,28 @@ def _replace_block_content(
         node.extract()
         node.attrs.pop(INLINE_ID_ATTR, None)
 
+        # Clear emphasis tags since their text is already in the target
+        # Atomic tags (img, video) keep their original content
+        _EMPHASIS_TAGS = {"i", "em", "strong", "b"}
+        is_emphasis = isinstance(tag, str) and tag in _EMPHASIS_TAGS
+        if is_emphasis:
+            node.clear()
+
         # Use verified position if available
         target_offset = None
+        has_verified_position = False
         if isinstance(tag, str) and tag in tag_positions:
             positions = tag_positions[tag]
             if positions:
                 start, _end = positions.pop(0)
                 target_offset = start
+                has_verified_position = True
 
-        # Fallback to proportional mapping
+        # Skip emphasis tags without verified positions (flattened during translation)
+        if is_emphasis and not has_verified_position:
+            continue
+
+        # Fallback to proportional mapping for atomic tags
         if target_offset is None:
             if offset <= 0:
                 target_offset = 0
