@@ -29,6 +29,7 @@ class BatchPlan:
     annotation_contexts: list[list[dict[str, str]]]
     next_source: str
     allow_empty_translations: bool = False
+    segment_metas: tuple[dict[str, object], ...] = ()
 
     @classmethod
     def capture(
@@ -60,6 +61,7 @@ class BatchPlan:
             deepcopy(annotation_contexts),
             next_source,
             allow_empty_translations,
+            tuple(deepcopy(s.meta) for s in segments),
         )
 
 
@@ -68,6 +70,7 @@ class BatchResult:
     targets: tuple[str, ...]
     before_polish: tuple[str | None, ...]
     precision_key: str | None = None
+    inline_metas: tuple[dict[str, object], ...] = ()
 
 
 class TranslationBatchExecutor:
@@ -88,8 +91,10 @@ class TranslationBatchExecutor:
             annotation_contexts=plan.annotation_contexts,
             next_source=plan.next_source,
             allow_empty_translations=plan.allow_empty_translations,
+            segment_metas=list(plan.segment_metas) if plan.segment_metas else None,
         )
         targets = [strip_ruby_markers(target) for target in targets]
+        inline_metas = self._translator.last_inline_metas or []
         before_polish: tuple[str | None, ...] = (None,) * len(targets)
         if polish:
             before_polish = tuple(targets)
@@ -117,7 +122,7 @@ class TranslationBatchExecutor:
                 )
             if len(polished) == len(targets):
                 targets = polished
-        return BatchResult(tuple(targets), before_polish)
+        return BatchResult(tuple(targets), before_polish, None, tuple(inline_metas))
 
 
 def resume_batches(segments: list[Segment], max_tokens: int) -> list[list[Segment]]:
