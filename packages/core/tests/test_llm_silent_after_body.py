@@ -571,7 +571,8 @@ def test_autofix_verify_action_loop_tls_header_stall(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """stall-150106 (v1273 PID 341458), stall-151327 (v1274 PID 363675),
-    stall-152118 (v1274 PID 368348 result-11).
+    stall-152118 (v1274 PID 368348 result-11), stall-152743 (v1274 PID
+    370971 result-12).
 
     AutofixVerification.fix_job hung in ReviewActionLoop after
     llm_json_mode_selected (cached json_object, autofix.verify). autofix.fix
