@@ -15,7 +15,6 @@ from openai import APIConnectionError, APITimeoutError
 from wenyi_core.agents.synopsis import Synopsizer
 from wenyi_core.agents.translator import Translator
 from wenyi_core.config import Config, LLMConfig
-from wenyi_core.llm.providers.deepseek import DeepSeekClient
 from wenyi_core.llm.retrying import (
     EmptyResponseError,
     is_resumable_provider_interrupt,
@@ -74,7 +73,7 @@ class _ClientStub:
 def _patch_stub(client, stub):
     """v1246 helper: Set credentials and return OpenAI patch context manager."""
     from unittest.mock import patch
-    
+
     client.adapter("default")._credentials = ("test-key",)
     return patch("openai.OpenAI", return_value=stub)
 
@@ -161,7 +160,7 @@ def test_synopsis_incomplete_response_retries_in_shared_transport(
 
     with _patch_stub(client, stub):
         assert client.complete([], operation=operation) == "Complete summary."
-    
+
     assert stub.completions.calls == 2
     waits = [event for event in events if event["event"] == "llm_retry_wait"]
     assert len(waits) == 1
@@ -183,7 +182,7 @@ def test_summary_exhaustion_respects_provider_attempt_limit(method, max_retries,
 
     with _patch_stub(client, stub):
         assert getattr(synopsizer, method)(*args) == ""
-    
+
     assert stub.completions.calls == max_retries + 1
     assert client.usage_summary()["totals"]["calls"] == max_retries + 1
 
@@ -202,8 +201,11 @@ def test_translation_truncation_uses_alignment_retry_and_paragraph_fallback(trun
     translator = Translator(client, cfg)
 
     with _patch_stub(client, stub):
-        assert translator.translate_batch(["First source.", "Second source."]) == ["First.", "Second."]
-    
+        assert translator.translate_batch(["First source.", "Second source."]) == [
+            "First.",
+            "Second.",
+        ]
+
     assert stub.completions.calls == truncated_attempts + len(successes)
     assert (translator.last_batch_turn is None) == (truncated_attempts == 2)
 
@@ -213,14 +215,14 @@ def test_openai_sdk_retry_is_disabled():
     import httpx
 
     client = RoutedLLMClient(_config(max_retries=4))
-    
+
     # Mock response to avoid actual network call
     mock_response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content="test"))],
         usage=None,
     )
     mock_client = _ClientStub([mock_response])
-    
+
     with (
         patch.dict(os.environ, {"TEST_LLM_KEY": "secret"}),
         patch("openai.OpenAI", return_value=mock_client) as openai_type,
@@ -247,7 +249,7 @@ def test_configured_timeout_reaches_every_http_client(timeout: float):
     """The connection deadline is what bounds a stalled provider, so it must
     survive the route to the SDK constructor for both the default value and a
     configured one, including a fallback connection reached after failover.
-    
+
     v1246: isolated client created per request, verify timeout config."""
     import httpx
 
@@ -260,14 +262,14 @@ def test_configured_timeout_reaches_every_http_client(timeout: float):
             max_retries=0,
         )
     )
-    
+
     # Mock response to avoid actual network call
     mock_response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content="test"))],
         usage=None,
     )
     mock_client = _ClientStub([mock_response])
-    
+
     with (
         patch.dict(os.environ, {"TEST_LLM_KEY": "secret"}),
         patch("openai.OpenAI", return_value=mock_client) as openai_type,
@@ -281,8 +283,13 @@ def test_configured_timeout_reaches_every_http_client(timeout: float):
     # Verify httpx.Timeout object is passed with proper read timeout
     assert openai_type.call_count >= 1, "OpenAI constructor should be called"
     timeout_arg = openai_type.call_args.kwargs["timeout"]
-    assert isinstance(timeout_arg, httpx.Timeout), f"Expected httpx.Timeout, got {type(timeout_arg)}"
-    assert timeout_arg.read == timeout, f"Expected read timeout {timeout}, got {timeout_arg.read}"
+    assert isinstance(timeout_arg, httpx.Timeout), (
+        f"Expected httpx.Timeout, got {type(timeout_arg)}"
+    )
+    from wenyi_core.llm.providers._openai_compatible import hard_deadline_seconds
+
+    expected = hard_deadline_seconds(timeout)
+    assert timeout_arg.read == expected, f"Expected read timeout {expected}, got {timeout_arg.read}"
 
 
 def test_transient_error_retries_once_and_records_wait_event():
@@ -301,8 +308,11 @@ def test_transient_error_retries_once_and_records_wait_event():
     )
 
     with _patch_stub(client, stub):
-        assert client.complete([{"role": "user", "content": "x"}], operation="translation.body") == "ok"
-    
+        assert (
+            client.complete([{"role": "user", "content": "x"}], operation="translation.body")
+            == "ok"
+        )
+
     assert stub.completions.calls == 2
     assert [event["event"] for event in events] == ["llm_retry_wait"]
     assert events[0]["reason"] == "http_502"
@@ -347,10 +357,10 @@ def test_permanent_error_is_not_retried_or_reported_as_exhaustion():
     """v1246: isolated client per request, patch OpenAI constructor."""
     client = RoutedLLMClient(_config(max_retries=4))
     stub = _ClientStub([_HttpError(401)])
-    
+
     # v1246: Set credentials and patch constructor
     client.adapter("default")._credentials = ("test-key",)
-    
+
     events: list[dict[str, Any]] = []
     client.set_event_sink(
         lambda event, **data: (

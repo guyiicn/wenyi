@@ -28,20 +28,40 @@ OptionsT = TypeVar("OptionsT", bound=BaseModel)
 _JSON_MODE_INSTRUCTION = "Output must be valid json."
 _APPLICATION_TIMEOUT_FACTOR = 1.1
 _WATCHDOG_POLL_SECONDS = 0.05
+_IO_SLICE_SECONDS = 1.0
+_DEFAULT_HARD_DEADLINE_S = 240.0
+_HARD_DEADLINE_ENV = "WENYI_LLM_HARD_DEADLINE_S"
 _SOCKET_WALK_LIMIT = 1024
 _LOGGER = logging.getLogger(__name__)
 
 
+def hard_deadline_seconds(timeout: float) -> float:
+    """Wall-clock cap for one attempt. Not part of ProviderConfig / digest identity.
+
+    Production watchdog kills the process after 300s of silence, so a single
+    attempt must finish well before that. Default ``min(timeout, 240)``.
+    Override with ``WENYI_LLM_HARD_DEADLINE_S``.
+    """
+    raw = os.environ.get(_HARD_DEADLINE_ENV, "").strip()
+    if raw:
+        try:
+            return max(0.001, float(raw))
+        except ValueError:
+            pass
+    return min(max(0.001, float(timeout)), _DEFAULT_HARD_DEADLINE_S)
+
+
 def application_timeout_seconds(timeout: float) -> float:
     """Wall-clock bound used when httpx/SSL read timeouts do not fire."""
-    return float(timeout) * _APPLICATION_TIMEOUT_FACTOR
+    soft = float(timeout) * _APPLICATION_TIMEOUT_FACTOR
+    return min(soft, hard_deadline_seconds(timeout))
 
 
 def httpx_timeout_config(timeout: float):
     """Split connect/read/write/pool deadlines so a stalled peer cannot hang one phase."""
     import httpx
 
-    bounded = max(0.001, float(timeout))
+    bounded = max(0.001, min(float(timeout), hard_deadline_seconds(timeout)))
     return httpx.Timeout(
         connect=min(60.0, bounded),
         read=bounded,
@@ -72,14 +92,25 @@ def _cap_io_timeout(timeout: float | None, remaining: float) -> float:
     return max(0.001, min(float(timeout), bounded))
 
 
-class _DeadlineStream:
-    """Cap every TCP/TLS read and write to the remaining application deadline.
+def _is_timeout_error(error: BaseException) -> bool:
+    if isinstance(error, (TimeoutError, socket.timeout)):
+        return True
+    module = getattr(type(error), "__module__", "") or ""
+    name = type(error).__name__.lower()
+    return "timeout" in name and ("httpcore" in module or "httpx" in module)
 
-    httpcore calls ``SSLSocket.settimeout(read_timeout)`` per recv. That uses
-    poll() and clears SO_RCVTIMEO. Production v1257 stacks sat in that poll()
-    waiting for headers while Event.wait on the deadline thread did not
-    recover. Re-apply kernel timeouts after wrap/settimeout, and never poll
-    longer than the wall-clock deadline.
+
+class _DeadlineStream:
+    """Cap every TCP/TLS I/O slice so a silent peer cannot pin the interpreter.
+
+    httpcore calls ``SSLSocket.settimeout(read_timeout)`` per recv, which becomes
+    a C-level ``poll()`` in CPython 3.13 ``_ssl``. That poll does release the
+    GIL (``Py_BEGIN_ALLOW_THREADS``), but v1273 passed the entire remaining
+    window (~330s) as the poll timeout. MainThread/watchdog then sat in
+    ``clock_nanosleep`` inside ``_wait_until`` while the worker stayed in
+    ``SSLSocket.read``; at 354s the 330s bound had still not raised. Slice
+    each SSL poll to 1s so the deadline check can run, and re-apply
+    ``SO_RCVTIMEO`` after wrap/settimeout.
     """
 
     def __init__(self, inner: Any, deadline: float, socket_options: list[Any]) -> None:
@@ -91,7 +122,7 @@ class _DeadlineStream:
     def _remaining(self) -> float:
         return self._deadline - time.monotonic()
 
-    def _apply_kernel_timeouts(self) -> None:
+    def _apply_kernel_timeouts(self, seconds: float | None = None) -> None:
         sock = None
         extra = getattr(self._inner, "get_extra_info", None)
         if callable(extra):
@@ -103,7 +134,10 @@ class _DeadlineStream:
             sock = getattr(self._inner, "_sock", None)
         if not isinstance(sock, socket.socket):
             return
-        for option in self._socket_options:
+        options = (
+            os_socket_timeout_options(seconds) if seconds is not None else self._socket_options
+        )
+        for option in options:
             try:
                 sock.setsockopt(*option)
             except Exception:
@@ -115,15 +149,29 @@ class _DeadlineStream:
             raise socket.timeout("LLM application deadline exceeded")
         return remaining
 
-    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+    def _slice_timeout(self, timeout: float | None) -> float:
         remaining = self._raise_if_expired()
-        self._apply_kernel_timeouts()
-        return self._inner.read(max_bytes, timeout=_cap_io_timeout(timeout, remaining))
+        return _cap_io_timeout(timeout, min(remaining, _IO_SLICE_SECONDS))
+
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        # v1273: one poll(remaining) of ~330s held the GIL in CPython 3.13.5
+        # SSL_read, so MainThread/watchdog time.sleep could not resume past
+        # the deadline. Slice each SSL poll to 1s and retry until the wall cap.
+        while True:
+            cap = self._slice_timeout(timeout)
+            self._apply_kernel_timeouts(cap)
+            try:
+                return self._inner.read(max_bytes, timeout=cap)
+            except BaseException as error:
+                if self._remaining() <= 0 or not _is_timeout_error(error):
+                    raise
 
     def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        # Do not retry a timed-out write: sendall may already have pushed a prefix.
         remaining = self._raise_if_expired()
-        self._apply_kernel_timeouts()
-        return self._inner.write(buffer, timeout=_cap_io_timeout(timeout, remaining))
+        cap = _cap_io_timeout(timeout, min(remaining, 60.0))
+        self._apply_kernel_timeouts(cap)
+        return self._inner.write(buffer, timeout=cap)
 
     def close(self) -> None:
         self._inner.close()
@@ -138,7 +186,7 @@ class _DeadlineStream:
         inner = self._inner.start_tls(
             ssl_context,
             server_hostname=server_hostname,
-            timeout=_cap_io_timeout(timeout, remaining),
+            timeout=_cap_io_timeout(timeout, min(remaining, 60.0)),
         )
         wrapped = _DeadlineStream(inner, self._deadline, self._socket_options)
         wrapped._apply_kernel_timeouts()
@@ -476,7 +524,7 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
 
         self.validate_credentials()
         timeout_config = httpx_timeout_config(self.cfg.timeout)
-        socket_options = os_socket_timeout_options(self.cfg.timeout)
+        socket_options = os_socket_timeout_options(hard_deadline_seconds(self.cfg.timeout))
         transport = httpx.HTTPTransport(
             retries=0,
             http1=True,

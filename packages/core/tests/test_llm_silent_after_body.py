@@ -13,9 +13,12 @@ import subprocess
 import sys
 import threading
 import time
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 import pytest
+from wenyi_core.agents.review_actions import ReviewActionLoop
 from wenyi_core.config import Config
 from wenyi_core.llm.factory import build_client
 from wenyi_core.llm.retrying import ProviderRequestError
@@ -206,7 +209,14 @@ def _start_stall_server(
     return proc, port, count_path, cert
 
 
-def _make_client(url: str, *, timeout: float, max_retries: int, max_concurrency: int = 2):
+def _make_client(
+    url: str,
+    *,
+    timeout: float,
+    max_retries: int,
+    max_concurrency: int = 2,
+    max_output_tokens: int = 32,
+):
     os.environ["WENYI_STALL_KEY"] = "local-dummy-not-a-real-key"
     cfg = Config.from_dict(
         {
@@ -222,7 +232,13 @@ def _make_client(url: str, *, timeout: float, max_retries: int, max_concurrency:
                         "max_concurrency": max_concurrency,
                     }
                 },
-                "models": {"m": {"provider": "stall", "model": "x", "max_output_tokens": 32}},
+                "models": {
+                    "m": {
+                        "provider": "stall",
+                        "model": "x",
+                        "max_output_tokens": max_output_tokens,
+                    }
+                },
                 "tiers": {"strong": "m", "cheap": "m", "fast": "m"},
             },
             "paths": {"state_dir": "/tmp/wenyi-silent-after-body-state"},
@@ -454,6 +470,92 @@ def test_verify_success_then_scan_tls_header_stall_times_out(
         assert caught.value.reason == "timeout"
         assert caught.value.resumable is True
         assert int(count_path.read_text(encoding="utf-8")) == 2
+    finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+class _LoopTrace:
+    def __init__(self) -> None:
+        self.data: dict[str, dict[str, Any]] = {}
+
+    def load(self, agent_id: str) -> dict[str, Any] | None:
+        return deepcopy(self.data.get(agent_id))
+
+    def save(self, agent_id: str, snapshot: dict[str, Any]) -> None:
+        self.data[agent_id] = deepcopy(snapshot)
+
+    def log_event(self, event: str, **data: Any) -> None:
+        return None
+
+
+class _LoopEvidence:
+    def execute(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True}
+
+    def evidence_refs(self, value: Any) -> set[str]:
+        return set()
+
+
+def test_action_loop_verify_tls_header_stall_large_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Match PID 339170: ReviewActionLoop review.verify, cached json_object,
+    ~190k-token body, TLS server reads the full request then never writes
+    headers. Main must return at the attempt deadline even if llm-request
+    is still in SSLSocket.read.
+    """
+    proc = None
+    try:
+        proc, port, count_path, cert = _start_stall_server(tmp_path, "silent", tls=True)
+        assert cert is not None
+        monkeypatch.setenv("SSL_CERT_FILE", str(cert))
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(cert))
+        monkeypatch.setenv("WENYI_LLM_HARD_DEADLINE_S", "2")
+        client = _make_client(
+            f"https://127.0.0.1:{port}/v1",
+            timeout=300.0,
+            max_retries=0,
+            max_output_tokens=65536,
+        )
+        _seed_cached_json_object(client)
+        user = "x" * 124000
+        messages = [
+            {"role": "system", "content": "System instruction"},
+            {"role": "user", "content": user},
+        ]
+        estimate = len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) + 256 + 65536
+        assert 180_000 <= estimate <= 210_000, estimate
+        loop_config = Config.from_dict(
+            {
+                "language": {"source": "en", "target": "zh"},
+                "llm": {"preset": "fake"},
+                "pipeline": {"review_agent_max_evidence_rounds": 0},
+            }
+        )
+        started = time.monotonic()
+        with pytest.raises(ProviderRequestError) as caught:
+            ReviewActionLoop(client, loop_config, _LoopEvidence(), _LoopTrace()).run(
+                agent_id="pid-339170",
+                system="System instruction",
+                user=user,
+                stage="review.verify",
+                allowed_refs=set(),
+                validate_final=lambda data, refs: data,
+            )
+        elapsed = time.monotonic() - started
+        worker_alive = any(
+            thread.name == "llm-request" and thread.is_alive() for thread in threading.enumerate()
+        )
+        assert elapsed < 6.0, (
+            f"action-loop verify hung for {elapsed:.2f}s worker_alive={worker_alive}"
+        )
+        assert elapsed >= 1.5
+        assert caught.value.reason == "timeout"
+        assert caught.value.resumable is True
+        accepted = int((count_path.read_text(encoding="utf-8") or "0").strip() or "0")
+        assert accepted <= 1
     finally:
         if proc is not None:
             proc.kill()

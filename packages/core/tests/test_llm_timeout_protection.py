@@ -196,10 +196,9 @@ def test_application_timeout_fires_on_trickle_response():
             client._request(messages, model, json_mode=False, context=context)
         elapsed = time.time() - start
 
-        # Verify timeout fired around configured timeout (1.0s * 1.1 = 1.1s)
-        # With mock checking close_called, should exit after ~1.2s (1.0s + 0.3s*1 loop)
-        assert elapsed < 2.0, f"Timeout took too long: {elapsed:.2f}s (expected ~1.2s)"
-        assert elapsed > 1.0, f"Timeout fired too early: {elapsed:.2f}s (expected ~1.2s)"
+        # Hard deadline is min(timeout, 240)=1.0s, so the attempt bound is 1.0s.
+        assert elapsed < 2.0, f"Timeout took too long: {elapsed:.2f}s (expected ~1.0s)"
+        assert elapsed >= 0.9, f"Timeout fired too early: {elapsed:.2f}s (expected ~1.0s)"
 
         # Verify close was called on timeout
         assert len(close_called) > 0, "close() should have been called on timeout"
@@ -293,8 +292,10 @@ def test_httpx_timeout_configuration():
         import httpx
 
         assert isinstance(timeout_arg, httpx.Timeout)
-        assert timeout_arg.read == 900.0, f"Expected read timeout 900.0, got {timeout_arg.read}"
-        assert timeout_arg.write == 900.0
+        assert timeout_arg.read == 240.0, (
+            f"Expected hard-capped read timeout 240.0, got {timeout_arg.read}"
+        )
+        assert timeout_arg.write == 240.0
         assert timeout_arg.connect == 60.0
         assert timeout_arg.pool == 60.0
         http_client = call_kwargs.get("http_client")
@@ -459,3 +460,66 @@ def test_wait_until_deadline_does_not_call_event_wait():
     assert 0.2 <= time.monotonic() - started < 0.6
     done.set()
     assert _wait_until(done, 1.0) is True
+
+
+def test_hard_deadline_caps_below_external_watchdog(monkeypatch: pytest.MonkeyPatch):
+    from wenyi_core.llm.configuration import LLMConfig
+    from wenyi_core.llm.providers._openai_compatible import (
+        application_timeout_seconds,
+        hard_deadline_seconds,
+    )
+
+    monkeypatch.delenv("WENYI_LLM_HARD_DEADLINE_S", raising=False)
+    assert hard_deadline_seconds(300) == 240.0
+    assert application_timeout_seconds(300) == 240.0
+    monkeypatch.setenv("WENYI_LLM_HARD_DEADLINE_S", "90")
+    assert application_timeout_seconds(300) == 90.0
+    dump = LLMConfig().model_dump()
+    assert "WENYI_LLM_HARD_DEADLINE_S" not in str(dump)
+    assert "hard_deadline" not in dump
+
+
+def test_deadline_stream_slices_ssl_polls_to_one_second():
+    """v1273: one poll(remaining≈330s) held the GIL in CPython 3.13.5 SSL_read."""
+    from wenyi_core.llm.providers._openai_compatible import _IO_SLICE_SECONDS, _DeadlineStream
+
+    seen: list[float] = []
+
+    class Inner:
+        def read(self, max_bytes, timeout=None):
+            seen.append(float(timeout))
+            if len(seen) < 3:
+                raise TimeoutError("slice")
+            return b"ok"
+
+        def get_extra_info(self, info):
+            return None
+
+    stream = _DeadlineStream(Inner(), time.monotonic() + 330.0, [])
+    assert stream.read(1024) == b"ok"
+    assert len(seen) == 3
+    assert all(timeout <= _IO_SLICE_SECONDS + 0.001 for timeout in seen)
+
+
+def test_main_returns_at_deadline_while_worker_blocks_in_read(monkeypatch: pytest.MonkeyPatch):
+    """Main thread must not wait for an SSL poll that ignores its timeout."""
+    monkeypatch.setenv("WENYI_LLM_HARD_DEADLINE_S", "1")
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=300.0)
+    client = FakeClient(cfg)
+    client._credentials = ("test-key",)
+    stop = threading.Event()
+    mock_sdk_client = Mock()
+    mock_sdk_client.chat.completions.create = lambda **_kwargs: stop.wait(60)
+    mock_sdk_client.close = Mock()
+    started = time.monotonic()
+    with patch("openai.OpenAI", return_value=mock_sdk_client):
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(
+                [{"role": "user", "content": "verify"}],
+                ResolvedModel(model="test-model", options=FakeOptions()),
+                json_mode=True,
+                context=_timeout_context(),
+            )
+    elapsed = time.monotonic() - started
+    stop.set()
+    assert elapsed < 3.0, f"main waited for SSL read: {elapsed:.2f}s"
