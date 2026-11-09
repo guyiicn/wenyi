@@ -115,7 +115,11 @@ def main() -> None:
             with lock:
                 current = int(count_path.read_text(encoding="utf-8") or "0") + 1
                 count_path.write_text(str(current), encoding="utf-8")
-            if mode == "ok" or (mode == "ok_then_silent" and current == 1):
+            if (
+                mode == "ok"
+                or (mode == "ok_then_silent" and current == 1)
+                or (mode == "ok_two_then_silent" and current <= 2)
+            ):
                 conn.sendall(
                     b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                     + f"Content-Length: {len(OK_BODY)}\r\n\r\n".encode()
@@ -496,6 +500,45 @@ class _LoopEvidence:
 
     def evidence_refs(self, value: Any) -> set[str]:
         return set()
+
+
+def test_verify_scan_then_cached_verify_tls_header_stall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """stall-143323: PID 339625 v1273. review.verify and review.scan both
+    completed with cached json_object, then a later review.verify hung after
+    llm_json_mode_selected with ESTAB and main still in _wait_until.
+    """
+    proc = None
+    try:
+        proc, port, count_path, cert = _start_stall_server(tmp_path, "ok_two_then_silent", tls=True)
+        assert cert is not None
+        monkeypatch.setenv("SSL_CERT_FILE", str(cert))
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(cert))
+        monkeypatch.setenv("WENYI_LLM_HARD_DEADLINE_S", "2")
+        client = _make_client(
+            f"https://127.0.0.1:{port}/v1",
+            timeout=300.0,
+            max_retries=0,
+            max_concurrency=2,
+            max_output_tokens=65536,
+        )
+        _seed_cached_json_object(client)
+        assert _call_json(client, "small verify", "review.verify")
+        assert _call_json(client, "small scan", "review.scan")
+        started = time.monotonic()
+        with pytest.raises(ProviderRequestError) as caught:
+            _call_json(client, "x" * 124000, "review.verify")
+        elapsed = time.monotonic() - started
+        assert elapsed < 6.0, f"cached verify after scan hung for {elapsed:.2f}s"
+        assert elapsed >= 1.5
+        assert caught.value.reason == "timeout"
+        assert caught.value.resumable is True
+        assert int(count_path.read_text(encoding="utf-8")) == 3
+    finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 def test_action_loop_verify_tls_header_stall_large_body(

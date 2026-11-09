@@ -462,6 +462,37 @@ def test_wait_until_deadline_does_not_call_event_wait():
     assert _wait_until(done, 1.0) is True
 
 
+def test_clamp_ssl_timeout_never_polls_longer_than_slice():
+    from wenyi_core.llm.providers._openai_compatible import _clamp_ssl_timeout
+
+    assert _clamp_ssl_timeout(330.0, 1.0) == 1.0
+    assert _clamp_ssl_timeout(None, 1.0) == 1.0
+    assert _clamp_ssl_timeout(-1.0, 1.0) == 1.0
+    assert _clamp_ssl_timeout(0.0, 1.0) == 0.0
+    assert _clamp_ssl_timeout(0.25, 1.0) == 0.25
+
+
+def test_bound_ssl_polls_clamps_sslsocket_settimeout():
+    import ssl as ssl_mod
+
+    from wenyi_core.llm.providers._openai_compatible import bound_ssl_polls
+
+    seen: list[float | None] = []
+
+    def capture(self, value):
+        seen.append(value)
+
+    orig = ssl_mod.SSLSocket.settimeout
+    ssl_mod.SSLSocket.settimeout = capture  # type: ignore[method-assign]
+    try:
+        with bound_ssl_polls(1.0):
+            ssl_mod.SSLSocket.settimeout(object(), 330.0)  # type: ignore[misc]
+            ssl_mod.SSLSocket.settimeout(object(), None)  # type: ignore[misc]
+    finally:
+        ssl_mod.SSLSocket.settimeout = orig  # type: ignore[method-assign]
+    assert seen == [1.0, 1.0]
+
+
 def test_hard_deadline_caps_below_external_watchdog(monkeypatch: pytest.MonkeyPatch):
     from wenyi_core.llm.configuration import LLMConfig
     from wenyi_core.llm.providers._openai_compatible import (

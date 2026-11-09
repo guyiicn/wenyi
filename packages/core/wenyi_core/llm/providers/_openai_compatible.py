@@ -6,11 +6,13 @@ import json
 import logging
 import os
 import socket
+import ssl
 import struct
 import threading
 import time
 from abc import abstractmethod
-from typing import Any, Generic, TypeVar
+from contextlib import contextmanager
+from typing import Any, Generic, Iterator, TypeVar
 
 from pydantic import BaseModel
 
@@ -33,6 +35,9 @@ _DEFAULT_HARD_DEADLINE_S = 240.0
 _HARD_DEADLINE_ENV = "WENYI_LLM_HARD_DEADLINE_S"
 _SOCKET_WALK_LIMIT = 1024
 _LOGGER = logging.getLogger(__name__)
+_SSL_POLL_LOCK = threading.Lock()
+_SSL_POLL_DEPTH = 0
+_SSL_POLL_ORIG: tuple[Any, Any] | None = None
 
 
 def hard_deadline_seconds(timeout: float) -> float:
@@ -90,6 +95,60 @@ def _cap_io_timeout(timeout: float | None, remaining: float) -> float:
     if timeout is None:
         return bounded
     return max(0.001, min(float(timeout), bounded))
+
+
+def _clamp_ssl_timeout(value: float | None, cap: float) -> float:
+    """Keep SSL poll() slices short. 0 stays non-blocking for abort()."""
+    if value is None:
+        return cap
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return cap
+    if numeric < 0:
+        return cap
+    if numeric == 0:
+        return 0.0
+    return min(numeric, cap)
+
+
+@contextmanager
+def bound_ssl_polls(max_seconds: float = _IO_SLICE_SECONDS) -> Iterator[None]:
+    """Force SSLSocket.settimeout to ≤1s so CPython 3.13 _ssl cannot poll(330s).
+
+    httpcore calls ``sock.settimeout(read_timeout)`` inside SyncStream.read.
+    v1273 passed remaining≈330s there; production poll() in ``_ssl`` then
+    outlived both ``_wait_until`` and the 300s process watchdog. Clamp even
+    if ``_DeadlineStream`` wrapping is skipped. Refcounted so concurrent
+    attempts cannot restore the uncapped method while another is in flight.
+    """
+
+    global _SSL_POLL_DEPTH, _SSL_POLL_ORIG
+    cap = max(0.001, float(max_seconds))
+    with _SSL_POLL_LOCK:
+        if _SSL_POLL_DEPTH == 0:
+            _SSL_POLL_ORIG = (ssl.SSLSocket.settimeout, socket.socket.settimeout)
+
+            def _capped_ssl(self: ssl.SSLSocket, value: float | None) -> None:
+                orig = _SSL_POLL_ORIG[0] if _SSL_POLL_ORIG is not None else ssl.SSLSocket.settimeout
+                orig(self, _clamp_ssl_timeout(value, cap))
+
+            def _capped_sock(self: socket.socket, value: float | None) -> None:
+                orig = _SSL_POLL_ORIG[1] if _SSL_POLL_ORIG is not None else socket.socket.settimeout
+                orig(self, _clamp_ssl_timeout(value, cap))
+
+            ssl.SSLSocket.settimeout = _capped_ssl  # type: ignore[method-assign]
+            socket.socket.settimeout = _capped_sock  # type: ignore[method-assign]
+        _SSL_POLL_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _SSL_POLL_LOCK:
+            _SSL_POLL_DEPTH -= 1
+            if _SSL_POLL_DEPTH == 0 and _SSL_POLL_ORIG is not None:
+                ssl.SSLSocket.settimeout = _SSL_POLL_ORIG[0]
+                socket.socket.settimeout = _SSL_POLL_ORIG[1]
+                _SSL_POLL_ORIG = None
 
 
 def _is_timeout_error(error: BaseException) -> bool:
@@ -641,7 +700,8 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
                     raise TimeoutError(
                         f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)"
                     )
-                response = client.chat.completions.create(**kwargs)
+                with bound_ssl_polls(_IO_SLICE_SECONDS):
+                    response = client.chat.completions.create(**kwargs)
                 result_box.append(("success", response))
             except BaseException as error:
                 result_box.append(("error", error))
