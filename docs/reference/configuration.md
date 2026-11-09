@@ -377,7 +377,7 @@ described under [scope](#scope).
 | `pipeline.book_understanding` | `true` | Generate full-source chapter digests and a book synopsis. |
 | `pipeline.prescan_concurrency` | `4` | Chapter-digest concurrency; use `1` for sequential work. |
 | `pipeline.terminology_context` | `false` | CLI-only experimental whole-book evidence for person entries. |
-| `pipeline.annotation_alignment` | `true` | Align translated links/annotations; disabling uses paragraph-end link markers. |
+| `pipeline.annotation_alignment` | `true` | Align translated links/annotations. EPUB uses paragraph-end fallbacks; PDF omits failed items. See [PDF formats](formats.md#babeldoc). |
 | `pipeline.annotation_alignment_concurrency` | `4` | Concurrent per-annotation requests within one logical paragraph. |
 
 `three_draft_synthesis` produces **three independent drafts plus one source-aware
@@ -406,8 +406,8 @@ Web/API do not produce this evidence merely because the YAML flag is set.
 Review can consume existing notes without producing new evidence.
 
 Body translation and fresh Reviewer requests always receive the full glossary;
-there is no scope selector. Annotation alignment may add model requests and
-retains clickable fallbacks if placement fails. Full workflow, cost, and resume
+there is no scope selector. Annotation alignment may add model requests;
+placement-failure behavior depends on the [format](formats.md). Full workflow, cost, and resume
 semantics belong in the [workflow guide](../guide/pipeline.md); markup/layout
 limitations belong in [formats](formats.md).
 
@@ -471,7 +471,7 @@ for choosing the backend.
 |---|---|---|
 | `output.mono` | `true` | Produce a monolingual edition. |
 | `output.bilingual` | `false` | Also produce a source-and-translation edition. |
-| `output.bilingual_order` | `target_first` | `target_first` or `source_first`; PDF always places the original page on the left. |
+| `output.bilingual_order` | `target_first` | `target_first` or `source_first`; selects the first version in paragraph-paired formats and the left-hand version in PDF spreads. |
 | `output.bilingual_preserve_source_style` | `false` | Preserve recorded source styles rather than the format's default source presentation. |
 | `output.about_page` | `true` | Add the project “About this translation” page to EPUB output. |
 | `output.punctuation_normalize` | `true` | Normalize Simplified Chinese punctuation on the export copy only. |

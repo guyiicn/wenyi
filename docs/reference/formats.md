@@ -44,11 +44,11 @@ requested. Choose a suffix consistent with the selected format.
 Only monolingual output is enabled by default. `--bilingual` enables the bilingual
 edition; `--no-mono --bilingual` requests only that edition.
 EPUB, HTML, TXT, Markdown and DOCX can pair source and translation.
-PDF pairs each original page on the left with its translated page on the right
-within one wider page; see [BabelDOC](#babeldoc).
+PDF pairs each original page with its translated page side by side within one
+wider page; see [BabelDOC](#babeldoc).
 
-- `output.bilingual_order` selects target-first (default) or source-first for
-  paragraph-paired formats; it does not change PDF's left-original/right-translation layout.
+- `output.bilingual_order` selects target-first (default) or source-first.
+  Paragraph-paired formats place that version first; PDF places it on the left.
 - EPUB/HTML source text is subdued by default.
   `output.bilingual_preserve_source_style: true` inherits normal book styling.
 - DOCX source text defaults to normal body styling, without forced gray text,
@@ -226,17 +226,44 @@ or whitespace-only targets fall back to original paragraph text for that export,
 without changing saved targets. Layout boxes and role labels are omitted by default.
 Fonts, text expansion and the external engine still limit layout fidelity.
 
+With an annotation-capable bridge, Wenyi uses its shared annotation aligner to
+locate PDF formulas, superscript/citation markers, mixed styles and linked text in
+the completed translation. The bridge restores original formula/marker objects
+and styles, and rebuilds URI and internal page links against the typeset glyphs.
+Resolved named destinations, commonly used by citation links, are supported.
+Internal links to pages excluded from the export are omitted; other PDF action
+types are not reconstructed. Formula recognition still depends on BabelDOC.
+
+Keep `pipeline.annotation_alignment` enabled to locate translated PDF annotations.
+Export applies valid items independently: successful links, styles, formulas and
+markers remain even when another item in the same paragraph fails. Missing,
+invalid, stale or fallback positions are omitted without guessing locations,
+blocking export or replacing the translated body with source text. Conflicting
+formulas or incompatible styles omit only the conflicting items.
+
+Export itself makes no model calls. Resume translation refreshes missing/stale
+alignment after editing saved targets, but does not automatically retry unchanged
+PDF fallback items in a repair pass. CLI logs contain per-kind placement-validation
+and application rates, skipped counts and reasons; the bridge session's
+`annotation_stats.json` includes per-item IDs. These rates measure validation and
+application, not proven semantic accuracy, and separate translated text from
+source-identity placements. Update and restart the bridge for best-effort export.
+Import the PDF again to add annotation metadata to older text-only projects.
+
 **Keep both Wenyi state and the bridge session.** Set `WENYI_BABELDOC_STATE_DIR` on
 the bridge to persistent storage for long jobs. Its frozen extraction session can
 be restored after restart only while the session directory and the same
 Python/BabelDOC versions remain available. A temporary directory can disappear after
 reboot; Wenyi's translated chapters alone cannot recreate that PDF layout session.
 
-For a bilingual PDF, Wenyi combines each original page on the **left** with the
-corresponding bridge-produced translated page on the **right**, forming one wider
-PDF page per pair. Both retain their original physical size, visible crop and
+For a bilingual PDF, Wenyi combines each original page with the corresponding
+bridge-produced translated page, forming one wider PDF page per pair. The
+[bilingual order](#naming-and-bilingual-output) places the first version on the
+**left** and the other on the **right**. Both retain their original physical size, visible crop and
 orientation; unequal heights align at the top. Text and vector content are not
-rasterized. Paragraph order and source-style options do not affect this layout.
+rasterized. Source-style options do not affect this layout.
+Internal link destinations are remapped to the corresponding half of the output
+spread, including noncontiguous page selections.
 
 Keep the original PDF as well as the bridge session. Pairing uses the page
 selection saved at import, not current settings. A changed source, unreadable PDF
