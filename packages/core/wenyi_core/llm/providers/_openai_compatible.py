@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import struct
@@ -28,6 +29,8 @@ _JSON_MODE_INSTRUCTION = "Output must be valid json."
 _APPLICATION_TIMEOUT_FACTOR = 1.1
 _ABORT_JOIN_SECONDS = 2.0
 _WATCHDOG_POLL_SECONDS = 0.05
+_SOCKET_WALK_LIMIT = 1024
+_LOGGER = logging.getLogger(__name__)
 
 
 def application_timeout_seconds(timeout: float) -> float:
@@ -62,12 +65,68 @@ def os_socket_timeout_options(timeout: float) -> list[tuple[int, int, bytes]]:
     ]
 
 
+def _force_close_socket(sock: socket.socket) -> None:
+    """TCP-close without SSL_shutdown so a silent peer cannot block this thread."""
+    try:
+        sock._sslobj = None  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        sock.settimeout(0)
+    except Exception:
+        pass
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except Exception:
+        pass
+    fd = -1
+    try:
+        fd = sock.fileno()
+    except Exception:
+        pass
+    if fd >= 0:
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+    try:
+        socket.socket.close(sock)
+    except Exception:
+        pass
+
+
+def _sockets_from_httpx_client(http_client: Any) -> list[socket.socket]:
+    """Read in-flight httpcore sockets without traversing the OpenAI object graph."""
+    found: list[socket.socket] = []
+    try:
+        transport = getattr(http_client, "_transport", None)
+        pool = getattr(transport, "_pool", None)
+        connections = list(getattr(pool, "_connections", None) or [])
+    except Exception:
+        return found
+    for connection in connections:
+        inner = getattr(connection, "_connection", connection)
+        stream = getattr(inner, "_network_stream", None)
+        sock = None
+        extra = getattr(stream, "get_extra_info", None)
+        if callable(extra):
+            try:
+                sock = extra("socket")
+            except Exception:
+                sock = None
+        if sock is None:
+            sock = getattr(stream, "_sock", None)
+        if isinstance(sock, socket.socket):
+            found.append(sock)
+    return found
+
+
 def _iter_network_sockets(root: Any) -> list[socket.socket]:
     """Collect live TCP/SSL sockets from an OpenAI/httpx/httpcore client tree."""
     found: list[socket.socket] = []
     seen: set[int] = set()
-    stack: list[Any] = [root]
-    while stack:
+    stack: list[Any] = list(root) if isinstance(root, (list, tuple)) else [root]
+    while stack and len(seen) < _SOCKET_WALK_LIMIT:
         current = stack.pop()
         ident = id(current)
         if ident in seen:
@@ -95,7 +154,13 @@ def _iter_network_sockets(root: Any) -> list[socket.socket]:
         if isinstance(current, (list, tuple, set, frozenset)):
             stack.extend(current)
             continue
+        if module.startswith(("httpx", "httpcore")):
+            try:
+                stack.extend(vars(current).values())
+            except Exception:
+                pass
         for attr in (
+            "_wenyi_http_client",
             "_client",
             "_transport",
             "_pool",
@@ -120,28 +185,39 @@ def _iter_network_sockets(root: Any) -> list[socket.socket]:
 
 
 def abort_openai_client(client: Any) -> None:
-    """Unblock SSL_read by shutting the TCP fd down; do not wait for SSL_shutdown."""
+    """Unblock SSL_read/handshake. Never SSL_shutdown on this thread.
+
+    ``httpx.Client.close()`` / ``OpenAI.close()`` issue SSL_shutdown and wait for
+    the peer's close_notify. A silent Gemini socket never replies, so that wait
+    can last until TCP gives up (~20 minutes) and blocks the timeout path.
+    """
     if client is None:
         return
-    for sock in _iter_network_sockets(client):
-        try:
-            sock.shutdown(socket.SHUT_RDWR)
-        except Exception:
-            pass
-        try:
-            sock.close()
-        except Exception:
-            pass
-    http_client = getattr(client, "_client", None)
+    http_client = getattr(client, "_wenyi_http_client", None) or getattr(client, "_client", None)
+    sockets: list[socket.socket] = []
     if http_client is not None:
+        sockets.extend(_sockets_from_httpx_client(http_client))
+    sockets.extend(_iter_network_sockets([client, http_client]))
+    seen_socks: set[int] = set()
+    for sock in sockets:
+        ident = id(sock)
+        if ident in seen_socks:
+            continue
+        seen_socks.add(ident)
+        _force_close_socket(sock)
+
+    def _close_later() -> None:
+        if http_client is not None:
+            try:
+                http_client.close()
+            except Exception:
+                pass
         try:
-            http_client.close()
+            client.close()
         except Exception:
             pass
-    try:
-        client.close()
-    except Exception:
-        pass
+
+    threading.Thread(target=_close_later, daemon=True, name="llm-client-close").start()
 
 
 def _wait_until(event: threading.Event, timeout: float) -> bool:
@@ -291,6 +367,11 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         # Test doubles often swallow http_client. Close the unused pool immediately.
         if getattr(client, "_client", None) is not http_client:
             http_client.close()
+        else:
+            try:
+                client._wenyi_http_client = http_client
+            except Exception:
+                pass
         return client
 
     def _ensure_client(self) -> Any:
@@ -343,16 +424,9 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         response_format: dict[str, Any] | None = None,
     ) -> str:
         model_config = model
-        kwargs = self._build_request_kwargs(
-            model, messages, json_mode=json_mode, max_tokens=context.max_tokens
-        )
-        if response_format is not None:
-            kwargs["response_format"] = response_format
-
-        # Isolated client per request. Join-then-close() can miss silent-after-body
-        # TLS hangs: SSL_read does not return, join may not resume, and close() can
-        # deadlock on SSL_shutdown. Abort via socket.shutdown from a watchdog, and
-        # enforce SO_RCVTIMEO so the kernel unblocks SSL_read.
+        # Watchdog starts before kwargs, client construction, TLS, and the HTTP write.
+        # json_mode_selected is emitted immediately before this method; stalls after
+        # that event must still raise TimeoutError within the configured bound.
         result_box: list[Any] = []
         client_box: list[Any] = []
         done = threading.Event()
@@ -362,6 +436,15 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         def _do_request() -> None:
             client = None
             try:
+                if aborted.is_set():
+                    raise TimeoutError(
+                        f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)"
+                    )
+                kwargs = self._build_request_kwargs(
+                    model, messages, json_mode=json_mode, max_tokens=context.max_tokens
+                )
+                if response_format is not None:
+                    kwargs["response_format"] = response_format
                 client = self._create_openai_client()
                 client_box.append(client)
                 if aborted.is_set():
@@ -374,32 +457,41 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
             except BaseException as error:
                 result_box.append(("error", error))
             finally:
-                done.set()
                 if client is not None:
-                    try:
-                        client.close()
-                    except Exception:
-                        pass
+                    if aborted.is_set():
+                        abort_openai_client(client)
+                    else:
+                        try:
+                            client.close()
+                        except Exception:
+                            pass
+                done.set()
 
         def _watchdog() -> None:
             if _wait_until(done, timeout_seconds):
                 return
             aborted.set()
+            _LOGGER.warning(
+                "LLM request watchdog fired after %.1fs (operation=%s json_mode=%s)",
+                timeout_seconds,
+                context.operation,
+                json_mode,
+            )
             if client_box:
                 abort_openai_client(client_box[0])
 
         thread = threading.Thread(target=_do_request, daemon=True, name="llm-request")
         watchdog = threading.Thread(target=_watchdog, daemon=True, name="llm-timeout-watchdog")
-        thread.start()
         watchdog.start()
+        thread.start()
         _wait_until(done, timeout_seconds)
 
-        if thread.is_alive() or aborted.is_set():
+        finished_ok = bool(result_box) and result_box[0][0] == "success" and not aborted.is_set()
+        if (thread.is_alive() or aborted.is_set()) and not finished_ok:
             aborted.set()
             if client_box:
                 abort_openai_client(client_box[0])
             _wait_until(done, _ABORT_JOIN_SECONDS)
-            thread.join(timeout=_ABORT_JOIN_SECONDS)
             raise TimeoutError(f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)")
 
         if not result_box:

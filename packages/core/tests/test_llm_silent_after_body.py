@@ -310,6 +310,82 @@ def test_silent_after_body_concurrency_two_does_not_hang(
             proc.wait(timeout=5)
 
 
+def _call_json(client, body: str, operation: str) -> None:
+    client.complete(
+        [{"role": "user", "content": body}],
+        operation=operation,
+        json_mode=True,
+    )
+
+
+def _seed_cached_json_object(client) -> None:
+    """Match production: json_mode_source=cached, json_object, then the hang."""
+    from wenyi_core.llm.providers.openai_compatible import OpenAICompatibleOptions
+
+    adapter = client.adapter("stall")
+    key = (
+        "x",
+        json.dumps(OpenAICompatibleOptions().model_dump(mode="json"), sort_keys=True),
+    )
+    adapter._json_modes[key] = "json_object"
+
+
+def test_json_object_scan_times_out_while_verify_retries(tmp_path: Path):
+    """Concurrency 2: review.verify times out and retries while a large cached
+    json_object review.scan is in flight. Both must finish inside the retry bound.
+
+    Production v1257: verify's APITimeoutError retried; scan emitted
+    llm_json_mode_selected (cached json_object) and then hung 21 minutes with no
+    httpx line, no watchdog, and no attempt 2.
+    """
+    proc = None
+    try:
+        proc, port, count_path, _cert = _start_stall_server(tmp_path, "silent", tls=False)
+        client = _make_client(
+            f"http://127.0.0.1:{port}/v1",
+            timeout=1.0,
+            max_retries=1,
+            max_concurrency=2,
+        )
+        _seed_cached_json_object(client)
+        errors: list[BaseException | None] = [None, None]
+
+        def verify() -> None:
+            try:
+                _call_json(client, "small verify", "review.verify")
+            except BaseException as error:
+                errors[0] = error
+
+        def scan() -> None:
+            time.sleep(0.15)
+            try:
+                _call_json(client, _LARGE_BODY, "review.scan")
+            except BaseException as error:
+                errors[1] = error
+
+        threads = [
+            threading.Thread(target=verify, name="review-verify"),
+            threading.Thread(target=scan, name="review-scan"),
+        ]
+        started = time.monotonic()
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=12.0)
+        elapsed = time.monotonic() - started
+        assert all(not thread.is_alive() for thread in threads), (
+            f"json_object concurrent request hung after {elapsed:.2f}s"
+        )
+        assert elapsed < 12.0, f"json_object scan/verify hung for {elapsed:.2f}s"
+        assert all(isinstance(error, ProviderRequestError) for error in errors)
+        assert all(error.reason == "timeout" and error.resumable for error in errors)  # type: ignore[union-attr]
+        assert int(count_path.read_text(encoding="utf-8")) >= 3
+    finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
 @pytest.mark.parametrize("mode", ["silent", "trickle"])
 def test_stall_modes_converge_threads_and_fds(tmp_path: Path, mode: str):
     """Keep the previous silent/trickle convergence contract: no thread or fd growth."""

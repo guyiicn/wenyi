@@ -1,5 +1,6 @@
 """Test application-layer timeout protection against stalled/dead HTTPS connections."""
 
+import threading
 import time
 from unittest.mock import Mock, patch
 
@@ -25,6 +26,13 @@ class FakeClient(OpenAICompatibleBaseClient[FakeOptions]):
         return base_request_kwargs(model_config.model, messages, json_mode=json_mode)
 
 
+def _wait_until_close(mock_sdk_client, timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not mock_sdk_client.close.called and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert mock_sdk_client.close.called
+
+
 def test_application_timeout_fires_on_stalled_connection():
     """Application timeout should fire when SDK call hangs beyond configured timeout.
 
@@ -45,9 +53,12 @@ def test_application_timeout_fires_on_stalled_connection():
     mock_sdk_client.close = Mock()  # Add close method
 
     # Simulate stalled connection: create() hangs for longer than timeout
+    stop = threading.Event()
+
     def slow_create(**kwargs):
-        time.sleep(10.0)  # Hang much longer than timeout
-        raise AssertionError("Should not reach here - timeout should fire first")
+        stop.wait(10.0)
+        if not mock_sdk_client.close.called:
+            raise AssertionError("Should not reach here - timeout should fire first")
 
     mock_completions.create = slow_create
 
@@ -68,6 +79,7 @@ def test_application_timeout_fires_on_stalled_connection():
         # Should raise TimeoutError, not hang
         with pytest.raises(TimeoutError, match="exceeded application timeout"):
             client._request(messages, model, json_mode=False, context=context)
+    stop.set()
 
     # Verify daemon thread doesn't block (test should complete quickly, not wait 10s)
     # Allow small grace period for thread cleanup
@@ -77,7 +89,7 @@ def test_application_timeout_fires_on_stalled_connection():
     assert threads_after <= threads_before + 1, f"Thread leak: {threads_before} -> {threads_after}"
 
     # Verify close was called on timeout
-    assert mock_sdk_client.close.called
+    _wait_until_close(mock_sdk_client)
 
 
 def test_application_timeout_allows_slow_but_progressing_requests():
@@ -225,8 +237,10 @@ def test_daemon_thread_allows_process_exit():
     mock_sdk_client.close = Mock()
 
     # Simulate long-running request that never completes
+    stop = threading.Event()
+
     def infinite_request(**kwargs):
-        time.sleep(3600)  # Sleep for 1 hour
+        stop.wait(3600)
 
     mock_completions.create = infinite_request
 
@@ -247,10 +261,11 @@ def test_daemon_thread_allows_process_exit():
             client._request(messages, model, json_mode=False, context=context)
 
         # Verify close was called to interrupt socket
-        assert mock_sdk_client.close.called
+        _wait_until_close(mock_sdk_client)
+    stop.set()
 
-        # Main thread continues immediately (daemon thread still running in background)
-        # Test completes without waiting for daemon thread
+    # Main thread continues immediately (daemon thread still running in background)
+    # Test completes without waiting for daemon thread
 
 
 def test_httpx_timeout_configuration():
@@ -291,3 +306,102 @@ def test_httpx_timeout_configuration():
 
         assert any(option[1] == socket_mod.SO_RCVTIMEO for option in options)
         assert any(option[1] == socket_mod.SO_SNDTIMEO for option in options)
+
+
+def _timeout_context():
+    return RequestContext(
+        operation="review.scan",
+        tier="fast",
+        max_tokens=1000,
+        emit=Mock(),
+        record_usage=Mock(),
+        attempt_scope=Mock(),
+    )
+
+
+def test_timeout_does_not_wait_for_blocking_close():
+    """SSL_shutdown/close() must not delay TimeoutError on the calling thread.
+
+    Production v1257: wait returned, then client.close() blocked ~20 minutes on a
+    silent Gemini socket, so attempt 2 never started after json_mode_selected.
+    """
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=1.0)
+    client = FakeClient(cfg)
+    client._credentials = ("test-key",)
+
+    mock_sdk_client = Mock()
+    stop = threading.Event()
+    mock_sdk_client.chat.completions.create = lambda **_kwargs: stop.wait(30)
+
+    def hanging_close():
+        stop.wait(30)
+
+    mock_sdk_client.close = hanging_close
+
+    started = time.monotonic()
+    with patch("openai.OpenAI", return_value=mock_sdk_client):
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(
+                [{"role": "user", "content": "scan"}],
+                ResolvedModel(model="test-model", options=FakeOptions()),
+                json_mode=True,
+                context=_timeout_context(),
+            )
+    elapsed = time.monotonic() - started
+    stop.set()
+    assert elapsed < 4.0, f"TimeoutError waited for close(): {elapsed:.2f}s"
+
+
+def test_timeout_covers_client_construction_before_http():
+    """Hang in OpenAI()/TLS setup after json_mode_selected must still time out."""
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=1.0)
+    client = FakeClient(cfg)
+    client._credentials = ("test-key",)
+
+    stop = threading.Event()
+
+    def hanging_openai(**_kwargs):
+        stop.wait(30)
+        raise AssertionError("constructor should have been aborted")
+
+    started = time.monotonic()
+    with patch("openai.OpenAI", hanging_openai):
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(
+                [{"role": "user", "content": "scan"}],
+                ResolvedModel(model="test-model", options=FakeOptions()),
+                json_mode=True,
+                context=_timeout_context(),
+            )
+    elapsed = time.monotonic() - started
+    stop.set()
+    assert elapsed < 4.0, f"constructor hang was not bounded: {elapsed:.2f}s"
+
+
+def test_timeout_covers_json_request_kwargs_build():
+    """Building json_object kwargs is inside the watchdog, not before it."""
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=1.0)
+    client = FakeClient(cfg)
+    client._credentials = ("test-key",)
+
+    stop = threading.Event()
+
+    def hanging_kwargs(*_args, **_kwargs):
+        stop.wait(30)
+        return {}
+
+    started = time.monotonic()
+    with (
+        patch.object(client, "_build_request_kwargs", hanging_kwargs),
+        patch("openai.OpenAI", return_value=Mock()),
+    ):
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(
+                [{"role": "user", "content": "x" * 8000}],
+                ResolvedModel(model="test-model", options=FakeOptions()),
+                json_mode=True,
+                context=_timeout_context(),
+            )
+    elapsed = time.monotonic() - started
+    stop.set()
+    assert elapsed < 4.0, f"kwargs build hang was not bounded: {elapsed:.2f}s"
