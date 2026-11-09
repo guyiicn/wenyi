@@ -462,7 +462,8 @@ def isolated_attempts_enabled() -> bool:
     """Run one SDK attempt in a child process so a GIL-holding SSL poll cannot
     pin the caller. Not part of ProviderConfig / digest identity.
 
-    v1274 still hung: MainThread and llm-timeout-watchdog stayed in
+    v1274 hung twice (15:13 PID 363675 result-10, 15:21 PID 368348
+    result-11): MainThread and llm-timeout-watchdog stayed in
     ``_wait_until`` while the worker was in SSL_read. Sleep/join in the parent
     interpreter cannot preempt a CPython 3.13 ``_ssl`` poll that holds the GIL.
     A spawned child has its own interpreter; the parent ``Pipe.poll`` then

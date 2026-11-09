@@ -570,11 +570,12 @@ def _spawn_child_count() -> int:
 def test_autofix_verify_action_loop_tls_header_stall(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """stall-150106 (v1273 PID 341458) and stall-151327 (v1274 PID 363675).
+    """stall-150106 (v1273 PID 341458), stall-151327 (v1274 PID 363675),
+    stall-152118 (v1274 PID 368348 result-11).
 
     AutofixVerification.fix_job hung in ReviewActionLoop after
     llm_json_mode_selected (cached json_object, autofix.verify). autofix.fix
-    and an earlier autofix.verify had completed; socket stayed ESTAB. v1274
+    and earlier autofix.verify calls had completed; socket stayed ESTAB. v1274
     sliced SSL polls to 1s and capped at 240s, but MainThread/watchdog still
     sat in _wait_until. Isolation must let the parent return and SIGKILL the
     child so a GIL-holding SSL poll cannot pin the writer process.
