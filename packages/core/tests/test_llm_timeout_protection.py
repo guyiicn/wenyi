@@ -442,3 +442,20 @@ def test_timeout_fires_even_if_event_wait_ignores_timeout(monkeypatch: pytest.Mo
     elapsed = time.monotonic() - started
     stop.set()
     assert elapsed < 4.0, f"Event.wait hang blocked TimeoutError: {elapsed:.2f}s"
+
+
+def test_wait_until_deadline_does_not_call_event_wait():
+    """stall-135214: MainThread sat in Event.wait at _wait_until:154 for >5 min."""
+    import inspect
+
+    from wenyi_core.llm.providers._openai_compatible import _wait_until
+
+    source = inspect.getsource(_wait_until)
+    assert "event.wait" not in source
+    assert "time.sleep" in source
+    done = threading.Event()
+    started = time.monotonic()
+    assert _wait_until(done, 0.2) is False
+    assert 0.2 <= time.monotonic() - started < 0.6
+    done.set()
+    assert _wait_until(done, 1.0) is True

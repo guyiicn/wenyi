@@ -110,9 +110,9 @@ def main() -> None:
                 conn = ctx.wrap_socket(conn, server_side=True)
             read_http_request(conn)
             with lock:
-                current = int(count_path.read_text(encoding="utf-8") or "0")
-                count_path.write_text(str(current + 1), encoding="utf-8")
-            if mode == "ok":
+                current = int(count_path.read_text(encoding="utf-8") or "0") + 1
+                count_path.write_text(str(current), encoding="utf-8")
+            if mode == "ok" or (mode == "ok_then_silent" and current == 1):
                 conn.sendall(
                     b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                     + f"Content-Length: {len(OK_BODY)}\r\n\r\n".encode()
@@ -310,8 +310,8 @@ def test_silent_after_body_concurrency_two_does_not_hang(
             proc.wait(timeout=5)
 
 
-def _call_json(client, body: str, operation: str) -> None:
-    client.complete(
+def _call_json(client, body: str, operation: str) -> str:
+    return client.complete(
         [{"role": "user", "content": body}],
         operation=operation,
         json_mode=True,
@@ -415,7 +415,45 @@ def test_tls_accept_without_response_headers_times_out(
         assert elapsed >= 1.0
         assert caught.value.reason == "timeout"
         assert caught.value.resumable is True
-        assert int(count_path.read_text(encoding="utf-8")) == 1
+        accepted = int((count_path.read_text(encoding="utf-8") or "0").strip() or "0")
+        assert accepted <= 1
+    finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_verify_success_then_scan_tls_header_stall_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """stall-135214: review.verify completed, then review.scan hung after
+    llm_json_mode_selected (cached json_object) with no completed/retry event.
+    Server accepts TLS, replies once, then never writes headers.
+    """
+    proc = None
+    try:
+        proc, port, count_path, cert = _start_stall_server(tmp_path, "ok_then_silent", tls=True)
+        assert cert is not None
+        monkeypatch.setenv("SSL_CERT_FILE", str(cert))
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(cert))
+        client = _make_client(
+            f"https://127.0.0.1:{port}/v1",
+            timeout=1.0,
+            max_retries=0,
+            max_concurrency=2,
+        )
+        _seed_cached_json_object(client)
+        verify_text = _call_json(client, "small verify", "review.verify")
+        assert verify_text
+        started = time.monotonic()
+        with pytest.raises(ProviderRequestError) as caught:
+            _call_json(client, _LARGE_BODY, "review.scan")
+        elapsed = time.monotonic() - started
+        assert elapsed < 5.0, f"scan after verify hung for {elapsed:.2f}s"
+        assert elapsed >= 1.0
+        assert caught.value.reason == "timeout"
+        assert caught.value.resumable is True
+        assert int(count_path.read_text(encoding="utf-8")) == 2
     finally:
         if proc is not None:
             proc.kill()
