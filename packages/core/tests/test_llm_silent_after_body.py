@@ -541,6 +541,60 @@ def test_verify_scan_then_cached_verify_tls_header_stall(
             proc.wait(timeout=5)
 
 
+def test_autofix_verify_action_loop_tls_header_stall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """stall-150106: PID 341458 v1273. AutofixVerification.fix_job hung in
+    ReviewActionLoop after llm_json_mode_selected (cached json_object,
+    autofix.verify fingerprint). autofix.fix and earlier autofix.verify had
+    completed; socket stayed ESTAB and main stayed in _wait_until.
+    """
+    proc = None
+    try:
+        proc, port, count_path, cert = _start_stall_server(tmp_path, "ok_two_then_silent", tls=True)
+        assert cert is not None
+        monkeypatch.setenv("SSL_CERT_FILE", str(cert))
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(cert))
+        monkeypatch.setenv("WENYI_LLM_HARD_DEADLINE_S", "2")
+        client = _make_client(
+            f"https://127.0.0.1:{port}/v1",
+            timeout=300.0,
+            max_retries=0,
+            max_output_tokens=65536,
+        )
+        _seed_cached_json_object(client)
+        assert _call_json(client, "small fix", "autofix.fix")
+        assert _call_json(client, "small verify", "autofix.verify")
+        user = "x" * 124000
+        loop_config = Config.from_dict(
+            {
+                "language": {"source": "en", "target": "zh"},
+                "llm": {"preset": "fake"},
+                "pipeline": {"review_agent_max_evidence_rounds": 0},
+            }
+        )
+        started = time.monotonic()
+        with pytest.raises(ProviderRequestError) as caught:
+            ReviewActionLoop(client, loop_config, _LoopEvidence(), _LoopTrace()).run(
+                agent_id="pid-341458",
+                system="System instruction",
+                user=user,
+                stage="autofix.verify",
+                allowed_refs=set(),
+                validate_final=lambda data, refs: data,
+            )
+        elapsed = time.monotonic() - started
+        assert elapsed < 6.0, f"autofix.verify hung for {elapsed:.2f}s"
+        assert elapsed >= 1.5
+        assert caught.value.reason == "timeout"
+        assert caught.value.resumable is True
+        assert int(count_path.read_text(encoding="utf-8")) == 3
+    finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
 def test_action_loop_verify_tls_header_stall_large_body(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
