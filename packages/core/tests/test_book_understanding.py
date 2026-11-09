@@ -322,6 +322,56 @@ def test_llm_dump_changes_invalidate_saved_chapter_digests(tmp_path, fields):
     assert runtime.synopsizer.digest_chapter.call_count == 2
 
 
+def test_saved_chapter_digest_policy_is_language_fingerprint_plus_full_llm_dump(tmp_path):
+    """Digest identity is the analysis fingerprint plus the full LLM dump, nothing else."""
+    from wenyi_core.i18n.policy.models import content_hash
+
+    service, store, runtime = _service(tmp_path)
+    service.ensure_understanding(store)
+    expected = content_hash(
+        [
+            runtime.config.language_policy("analysis").task_fingerprint("chapter_digest"),
+            runtime.config.llm.model_dump(mode="json"),
+        ]
+    )
+    for index in (0, 1):
+        meta = store.load_chapter(index).meta
+        assert meta["source_digest_policy"] == expected
+        assert meta["source_digest_version"] == 2
+
+
+def test_same_translation_yaml_reuses_v1255_digests_and_completed_targets(tmp_path):
+    """A later version loading the same translation.yaml dump must reuse digests and targets."""
+    service, store, runtime = _service(tmp_path)
+    dump = runtime.config.llm.model_dump(mode="json")
+    assert service.ensure_understanding(store) == "Whole-book synopsis."
+    originals = []
+    for index in (0, 1):
+        chapter = store.load_chapter(index)
+        chapter.segments[0].target = f"已完成译文-{index}"
+        store.save_chapter(chapter)
+        originals.append(
+            {
+                "digest": chapter.meta["source_digest"],
+                "policy": chapter.meta["source_digest_policy"],
+                "sha": chapter.meta["source_digest_sha256"],
+                "target": chapter.segments[0].target,
+            }
+        )
+
+    runtime.synopsizer.reset_mock()
+    runtime.config.llm = LLMConfig.model_validate(dump)
+    assert service.ensure_understanding(store) == "Whole-book synopsis."
+    runtime.synopsizer.digest_chapter.assert_not_called()
+    runtime.synopsizer.book_synopsis.assert_not_called()
+    for index, original in enumerate(originals):
+        chapter = store.load_chapter(index)
+        assert chapter.meta["source_digest"] == original["digest"]
+        assert chapter.meta["source_digest_policy"] == original["policy"]
+        assert chapter.meta["source_digest_sha256"] == original["sha"]
+        assert chapter.segments[0].target == original["target"]
+
+
 def test_secret_values_are_not_part_of_digest_cache_identity(tmp_path, monkeypatch):
     service, store, runtime = _service(tmp_path)
     service.ensure_understanding(store)
