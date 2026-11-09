@@ -541,13 +541,43 @@ def test_verify_scan_then_cached_verify_tls_header_stall(
             proc.wait(timeout=5)
 
 
+def _spawn_child_count() -> int:
+    """Count this process's multiprocessing.spawn children (isolated attempts)."""
+    my_pid = os.getpid()
+    count = 0
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return 0
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            ppid = None
+            for line in (entry / "status").read_text(encoding="utf-8").splitlines():
+                if line.startswith("PPid:"):
+                    ppid = int(line.split()[1])
+                    break
+            if ppid != my_pid:
+                continue
+            cmdline = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if b"multiprocessing.spawn" in cmdline or b"spawn_main" in cmdline:
+            count += 1
+    return count
+
+
 def test_autofix_verify_action_loop_tls_header_stall(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """stall-150106: PID 341458 v1273. AutofixVerification.fix_job hung in
-    ReviewActionLoop after llm_json_mode_selected (cached json_object,
-    autofix.verify fingerprint). autofix.fix and earlier autofix.verify had
-    completed; socket stayed ESTAB and main stayed in _wait_until.
+    """stall-150106 (v1273 PID 341458) and stall-151327 (v1274 PID 363675).
+
+    AutofixVerification.fix_job hung in ReviewActionLoop after
+    llm_json_mode_selected (cached json_object, autofix.verify). autofix.fix
+    and an earlier autofix.verify had completed; socket stayed ESTAB. v1274
+    sliced SSL polls to 1s and capped at 240s, but MainThread/watchdog still
+    sat in _wait_until. Isolation must let the parent return and SIGKILL the
+    child so a GIL-holding SSL poll cannot pin the writer process.
     """
     proc = None
     try:
@@ -589,6 +619,8 @@ def test_autofix_verify_action_loop_tls_header_stall(
         assert caught.value.reason == "timeout"
         assert caught.value.resumable is True
         assert int(count_path.read_text(encoding="utf-8")) == 3
+        time.sleep(0.2)
+        assert _spawn_child_count() == 0, "isolated attempt child survived SIGKILL"
     finally:
         if proc is not None:
             proc.kill()
@@ -681,7 +713,8 @@ def test_stall_modes_converge_threads_and_fds(tmp_path: Path, mode: str):
         assert threads_after <= threads_before + 1
         assert llm_threads == 0
         if fds_before >= 0 and fds_after >= 0:
-            assert fds_after <= fds_before + 2
+            # Isolated attempts use spawn + a Pipe; a few leftover tracker fds are OK.
+            assert fds_after <= fds_before + 8
     finally:
         if proc is not None:
             proc.kill()

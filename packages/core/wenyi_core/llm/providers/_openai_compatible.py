@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import socket
 import ssl
@@ -33,6 +34,7 @@ _WATCHDOG_POLL_SECONDS = 0.05
 _IO_SLICE_SECONDS = 1.0
 _DEFAULT_HARD_DEADLINE_S = 240.0
 _HARD_DEADLINE_ENV = "WENYI_LLM_HARD_DEADLINE_S"
+_ISOLATED_ATTEMPT_ENV = "WENYI_LLM_ISOLATED_ATTEMPT"
 _SOCKET_WALK_LIMIT = 1024
 _LOGGER = logging.getLogger(__name__)
 _SSL_POLL_LOCK = threading.Lock()
@@ -456,6 +458,155 @@ def abort_openai_client(client: Any) -> None:
     threading.Thread(target=_close_later, daemon=True, name="llm-client-close").start()
 
 
+def isolated_attempts_enabled() -> bool:
+    """Run one SDK attempt in a child process so a GIL-holding SSL poll cannot
+    pin the caller. Not part of ProviderConfig / digest identity.
+
+    v1274 still hung: MainThread and llm-timeout-watchdog stayed in
+    ``_wait_until`` while the worker was in SSL_read. Sleep/join in the parent
+    interpreter cannot preempt a CPython 3.13 ``_ssl`` poll that holds the GIL.
+    A spawned child has its own interpreter; the parent ``Pipe.poll`` then
+    ``SIGKILL`` does not need that GIL. Test doubles that replace ``openai.OpenAI``
+    stay in-process. Override with ``WENYI_LLM_ISOLATED_ATTEMPT=0``.
+    """
+    raw = os.environ.get(_ISOLATED_ATTEMPT_ENV, "1").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    try:
+        import openai
+    except Exception:
+        return False
+    ctor = getattr(openai, "OpenAI", None)
+    if not isinstance(ctor, type):
+        return False
+    module = getattr(ctor, "__module__", "") or ""
+    if module != "openai" and not module.startswith("openai."):
+        return False
+    if getattr(ctor, "_mock_name", None) is not None:
+        return False
+    return True
+
+
+def build_openai_client(
+    *,
+    api_key: str,
+    base_url: str,
+    timeout: float,
+    deadline: float | None,
+    sdk_extra: dict[str, Any] | None = None,
+) -> Any:
+    """Construct one isolated OpenAI+httpx client. Callers must close it."""
+    import httpx
+    from openai import OpenAI
+
+    timeout_config = httpx_timeout_config(timeout)
+    socket_options = os_socket_timeout_options(hard_deadline_seconds(timeout))
+    transport = httpx.HTTPTransport(
+        retries=0,
+        http1=True,
+        http2=False,
+        socket_options=socket_options,
+        limits=httpx.Limits(max_keepalive_connections=0, max_connections=4),
+    )
+    if deadline is not None:
+        attach_deadline_backend(transport, deadline, socket_options)
+    http_client = httpx.Client(
+        timeout=timeout_config,
+        transport=transport,
+        follow_redirects=True,
+        trust_env=True,
+    )
+    try:
+        client = OpenAI(
+            api_key=api_key or "no-key",
+            base_url=base_url,
+            timeout=timeout_config,
+            max_retries=0,
+            http_client=http_client,
+            **(sdk_extra or {}),
+        )
+    except BaseException:
+        http_client.close()
+        raise
+    if getattr(client, "_client", None) is not http_client:
+        http_client.close()
+    else:
+        try:
+            client._wenyi_http_client = http_client
+        except Exception:
+            pass
+    return client
+
+
+def isolated_openai_chat_completion(payload: dict[str, Any]) -> dict[str, Any]:
+    """Child-process body: one Chat Completions call, then exit."""
+    remaining = max(0.001, float(payload["remaining_s"]))
+    deadline = time.monotonic() + remaining
+    client = build_openai_client(
+        api_key=str(payload.get("api_key") or "no-key"),
+        base_url=str(payload["base_url"]),
+        timeout=float(payload["timeout"]),
+        deadline=deadline,
+        sdk_extra=dict(payload.get("sdk_extra") or {}),
+    )
+    try:
+        with bound_ssl_polls(_IO_SLICE_SECONDS):
+            response = client.chat.completions.create(**payload["request_kwargs"])
+        choice = response.choices[0]
+        message = choice.message
+        raw_content = getattr(message, "content", None)
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            usage_data = None
+        elif hasattr(usage, "model_dump"):
+            usage_data = usage.model_dump()
+        elif isinstance(usage, dict):
+            usage_data = usage
+        else:
+            usage_data = {
+                key: getattr(usage, key, None)
+                for key in (
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "total_tokens",
+                    "prompt_tokens_details",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_creation",
+                )
+            }
+        return {
+            "ok": True,
+            "content": raw_content if isinstance(raw_content, str) else "",
+            "finish_reason": str(getattr(choice, "finish_reason", "") or ""),
+            "usage": usage_data,
+        }
+    finally:
+        abort_openai_client(client)
+
+
+def _isolated_attempt_main(payload: dict[str, Any], conn: Any) -> None:
+    try:
+        conn.send(isolated_openai_chat_completion(payload))
+    except BaseException as error:
+        conn.send(
+            {
+                "ok": False,
+                "error_type": type(error).__name__,
+                "message": str(error),
+                "timeout": isinstance(error, (TimeoutError, socket.timeout))
+                or "timeout" in type(error).__name__.lower(),
+                "truncated": isinstance(error, TruncatedResponseError),
+                "empty": isinstance(error, EmptyResponseError),
+            }
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _wait_until(event: threading.Event, timeout: float) -> bool:
     """Sleep to a monotonic deadline. Do not use Event.wait(timeout).
 
@@ -578,48 +729,14 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
 
     def _create_openai_client(self, *, deadline: float | None = None) -> Any:
         """Build one isolated SDK client. Callers must close it."""
-        import httpx
-        from openai import OpenAI
-
         self.validate_credentials()
-        timeout_config = httpx_timeout_config(self.cfg.timeout)
-        socket_options = os_socket_timeout_options(hard_deadline_seconds(self.cfg.timeout))
-        transport = httpx.HTTPTransport(
-            retries=0,
-            http1=True,
-            http2=False,
-            socket_options=socket_options,
-            limits=httpx.Limits(max_keepalive_connections=0, max_connections=4),
+        return build_openai_client(
+            api_key=self.api_key() or "no-key",
+            base_url=self.base_url,
+            timeout=self.cfg.timeout,
+            deadline=deadline,
+            sdk_extra=self._openai_sdk_kwargs(),
         )
-        if deadline is not None:
-            attach_deadline_backend(transport, deadline, socket_options)
-        http_client = httpx.Client(
-            timeout=timeout_config,
-            transport=transport,
-            follow_redirects=True,
-            trust_env=True,
-        )
-        try:
-            client = OpenAI(
-                api_key=self.api_key() or "no-key",
-                base_url=self.base_url,
-                timeout=timeout_config,
-                max_retries=0,
-                http_client=http_client,
-                **self._openai_sdk_kwargs(),
-            )
-        except BaseException:
-            http_client.close()
-            raise
-        # Test doubles often swallow http_client. Close the unused pool immediately.
-        if getattr(client, "_client", None) is not http_client:
-            http_client.close()
-        else:
-            try:
-                client._wenyi_http_client = http_client
-            except Exception:
-                pass
-        return client
 
     def _ensure_client(self) -> Any:
         with self._client_lock:
@@ -661,6 +778,93 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    def _request_isolated(
+        self,
+        request_kwargs: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        """Parent wait that does not share a GIL with SSL_read."""
+        import wenyi_core
+
+        core_root = os.path.dirname(os.path.dirname(os.path.abspath(wenyi_core.__file__)))
+        previous_pythonpath = os.environ.get("PYTHONPATH")
+        pythonpath = previous_pythonpath or ""
+        mutated_pythonpath = False
+        if core_root not in pythonpath.split(os.pathsep):
+            os.environ["PYTHONPATH"] = (
+                core_root + os.pathsep + pythonpath if pythonpath else core_root
+            )
+            mutated_pythonpath = True
+        remaining = max(0.001, timeout_seconds)
+        payload = {
+            "api_key": self.api_key() or "no-key",
+            "base_url": self.base_url,
+            "timeout": self.cfg.timeout,
+            "remaining_s": remaining,
+            "request_kwargs": request_kwargs,
+            "sdk_extra": self._openai_sdk_kwargs(),
+        }
+        ctx = multiprocessing.get_context("spawn")
+        parent_conn, child_conn = ctx.Pipe(duplex=False)
+        proc = ctx.Process(
+            target=_isolated_attempt_main,
+            args=(payload, child_conn),
+            daemon=True,
+            name="llm-isolated-attempt",
+        )
+        try:
+            proc.start()
+            child_conn.close()
+            child_conn = None
+            if not parent_conn.poll(remaining):
+                raise TimeoutError(
+                    f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)"
+                )
+            try:
+                result = parent_conn.recv()
+            except EOFError as error:
+                raise TimeoutError(
+                    f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)"
+                ) from error
+        finally:
+            if mutated_pythonpath:
+                if previous_pythonpath is None:
+                    os.environ.pop("PYTHONPATH", None)
+                else:
+                    os.environ["PYTHONPATH"] = previous_pythonpath
+            if child_conn is not None:
+                try:
+                    child_conn.close()
+                except Exception:
+                    pass
+            if proc.pid is not None:
+                if proc.is_alive():
+                    proc.kill()
+                proc.join(5)
+            try:
+                parent_conn.close()
+            except Exception:
+                pass
+            closer = getattr(proc, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
+        if not isinstance(result, dict):
+            raise RuntimeError("LLM isolated attempt returned an invalid payload")
+        if result.get("ok"):
+            return result
+        message = str(result.get("message") or "LLM isolated attempt failed")
+        if result.get("timeout"):
+            raise TimeoutError(message)
+        if result.get("truncated"):
+            raise TruncatedResponseError(message)
+        if result.get("empty"):
+            raise EmptyResponseError(message)
+        raise RuntimeError(f"{result.get('error_type') or 'LLMError'}: {message}")
+
     def _request(
         self,
         messages: Messages,
@@ -671,15 +875,43 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         response_format: dict[str, Any] | None = None,
     ) -> str:
         model_config = model
-        # Watchdog starts before kwargs, client construction, TLS, and the HTTP write.
-        # json_mode_selected is emitted immediately before this method; stalls after
-        # that event must still raise TimeoutError within the configured bound.
+        timeout_seconds = application_timeout_seconds(self.cfg.timeout)
+        deadline = time.monotonic() + timeout_seconds
+
+        if isolated_attempts_enabled():
+            request_kwargs = self._build_request_kwargs(
+                model, messages, json_mode=json_mode, max_tokens=context.max_tokens
+            )
+            if response_format is not None:
+                request_kwargs["response_format"] = response_format
+            isolated = self._request_isolated(request_kwargs, timeout_seconds=timeout_seconds)
+            usage = isolated.get("usage")
+            context.record_usage(self._normalize_usage(usage))
+            content = isolated.get("content") if isinstance(isolated.get("content"), str) else ""
+            finish_reason = str(isolated.get("finish_reason") or "").lower()
+            if finish_reason == "length":
+                raise TruncatedResponseError(
+                    "OpenAI-compatible response was truncated at the token limit"
+                )
+            if not content.strip():
+                fallback = self._json_response_fallback(model_config, None) if json_mode else None
+                if fallback is None or not fallback.strip():
+                    raise EmptyResponseError(f"{self.cfg.kind} response content is empty")
+                try:
+                    json.loads(fallback)
+                except json.JSONDecodeError as error:
+                    raise EmptyResponseError(
+                        f"{self.cfg.kind} configured JSON fallback response is invalid JSON"
+                    ) from error
+                content = fallback
+            return content
+
+        # Watchdog starts before client construction, TLS, and the HTTP write.
+        # Used when OpenAI is a test double; production uses an isolated child.
         result_box: list[Any] = []
         client_box: list[Any] = []
         done = threading.Event()
         aborted = threading.Event()
-        timeout_seconds = application_timeout_seconds(self.cfg.timeout)
-        deadline = time.monotonic() + timeout_seconds
 
         def _do_request() -> None:
             client = None
@@ -688,11 +920,11 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
                     raise TimeoutError(
                         f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)"
                     )
-                kwargs = self._build_request_kwargs(
+                request_kwargs = self._build_request_kwargs(
                     model, messages, json_mode=json_mode, max_tokens=context.max_tokens
                 )
                 if response_format is not None:
-                    kwargs["response_format"] = response_format
+                    request_kwargs["response_format"] = response_format
                 client = self._create_openai_client(deadline=deadline)
                 client_box.append(client)
                 if aborted.is_set():
@@ -701,7 +933,7 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
                         f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)"
                     )
                 with bound_ssl_polls(_IO_SLICE_SECONDS):
-                    response = client.chat.completions.create(**kwargs)
+                    response = client.chat.completions.create(**request_kwargs)
                 result_box.append(("success", response))
             except BaseException as error:
                 result_box.append(("error", error))

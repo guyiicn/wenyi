@@ -475,6 +475,7 @@ def test_clamp_ssl_timeout_never_polls_longer_than_slice():
 def test_bound_ssl_polls_clamps_sslsocket_settimeout():
     import ssl as ssl_mod
 
+    import wenyi_core.llm.providers._openai_compatible as openai_compat
     from wenyi_core.llm.providers._openai_compatible import bound_ssl_polls
 
     seen: list[float | None] = []
@@ -483,12 +484,16 @@ def test_bound_ssl_polls_clamps_sslsocket_settimeout():
         seen.append(value)
 
     orig = ssl_mod.SSLSocket.settimeout
+    openai_compat._SSL_POLL_DEPTH = 0
+    openai_compat._SSL_POLL_ORIG = None
     ssl_mod.SSLSocket.settimeout = capture  # type: ignore[method-assign]
     try:
         with bound_ssl_polls(1.0):
             ssl_mod.SSLSocket.settimeout(object(), 330.0)  # type: ignore[misc]
             ssl_mod.SSLSocket.settimeout(object(), None)  # type: ignore[misc]
     finally:
+        openai_compat._SSL_POLL_DEPTH = 0
+        openai_compat._SSL_POLL_ORIG = None
         ssl_mod.SSLSocket.settimeout = orig  # type: ignore[method-assign]
     assert seen == [1.0, 1.0]
 
@@ -507,7 +512,36 @@ def test_hard_deadline_caps_below_external_watchdog(monkeypatch: pytest.MonkeyPa
     assert application_timeout_seconds(300) == 90.0
     dump = LLMConfig().model_dump()
     assert "WENYI_LLM_HARD_DEADLINE_S" not in str(dump)
+    assert "WENYI_LLM_ISOLATED_ATTEMPT" not in str(dump)
     assert "hard_deadline" not in dump
+
+
+def test_isolated_attempts_skip_openai_mocks():
+    from wenyi_core.llm.providers._openai_compatible import isolated_attempts_enabled
+
+    with patch("openai.OpenAI", Mock()):
+        assert isolated_attempts_enabled() is False
+
+
+def test_isolated_attempts_skip_foreign_constructor():
+    """test_opencode_go FakeOpenAI is a real class, not unittest.mock."""
+    from wenyi_core.llm.providers._openai_compatible import isolated_attempts_enabled
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            raise AssertionError("test double must stay in-process")
+
+    with patch("openai.OpenAI", FakeOpenAI):
+        assert isolated_attempts_enabled() is False
+
+
+def test_isolated_attempts_default_on_for_real_sdk(monkeypatch: pytest.MonkeyPatch):
+    from wenyi_core.llm.providers._openai_compatible import isolated_attempts_enabled
+
+    monkeypatch.delenv("WENYI_LLM_ISOLATED_ATTEMPT", raising=False)
+    assert isolated_attempts_enabled() is True
+    monkeypatch.setenv("WENYI_LLM_ISOLATED_ATTEMPT", "0")
+    assert isolated_attempts_enabled() is False
 
 
 def test_deadline_stream_slices_ssl_polls_to_one_second():
