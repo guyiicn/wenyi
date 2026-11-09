@@ -1,5 +1,6 @@
 """Test application-layer timeout protection against stalled/dead HTTPS connections."""
 
+import threading
 import time
 from unittest.mock import Mock, patch
 
@@ -25,6 +26,13 @@ class FakeClient(OpenAICompatibleBaseClient[FakeOptions]):
         return base_request_kwargs(model_config.model, messages, json_mode=json_mode)
 
 
+def _wait_until_close(mock_sdk_client, timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not mock_sdk_client.close.called and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert mock_sdk_client.close.called
+
+
 def test_application_timeout_fires_on_stalled_connection():
     """Application timeout should fire when SDK call hangs beyond configured timeout.
 
@@ -45,9 +53,12 @@ def test_application_timeout_fires_on_stalled_connection():
     mock_sdk_client.close = Mock()  # Add close method
 
     # Simulate stalled connection: create() hangs for longer than timeout
+    stop = threading.Event()
+
     def slow_create(**kwargs):
-        time.sleep(10.0)  # Hang much longer than timeout
-        raise AssertionError("Should not reach here - timeout should fire first")
+        stop.wait(10.0)
+        if not mock_sdk_client.close.called:
+            raise AssertionError("Should not reach here - timeout should fire first")
 
     mock_completions.create = slow_create
 
@@ -68,6 +79,7 @@ def test_application_timeout_fires_on_stalled_connection():
         # Should raise TimeoutError, not hang
         with pytest.raises(TimeoutError, match="exceeded application timeout"):
             client._request(messages, model, json_mode=False, context=context)
+    stop.set()
 
     # Verify daemon thread doesn't block (test should complete quickly, not wait 10s)
     # Allow small grace period for thread cleanup
@@ -77,7 +89,7 @@ def test_application_timeout_fires_on_stalled_connection():
     assert threads_after <= threads_before + 1, f"Thread leak: {threads_before} -> {threads_after}"
 
     # Verify close was called on timeout
-    assert mock_sdk_client.close.called
+    _wait_until_close(mock_sdk_client)
 
 
 def test_application_timeout_allows_slow_but_progressing_requests():
@@ -184,10 +196,9 @@ def test_application_timeout_fires_on_trickle_response():
             client._request(messages, model, json_mode=False, context=context)
         elapsed = time.time() - start
 
-        # Verify timeout fired around configured timeout (1.0s * 1.1 = 1.1s)
-        # With mock checking close_called, should exit after ~1.2s (1.0s + 0.3s*1 loop)
-        assert elapsed < 2.0, f"Timeout took too long: {elapsed:.2f}s (expected ~1.2s)"
-        assert elapsed > 1.0, f"Timeout fired too early: {elapsed:.2f}s (expected ~1.2s)"
+        # Hard deadline is min(timeout, 240)=1.0s, so the attempt bound is 1.0s.
+        assert elapsed < 2.0, f"Timeout took too long: {elapsed:.2f}s (expected ~1.0s)"
+        assert elapsed >= 0.9, f"Timeout fired too early: {elapsed:.2f}s (expected ~1.0s)"
 
         # Verify close was called on timeout
         assert len(close_called) > 0, "close() should have been called on timeout"
@@ -225,8 +236,10 @@ def test_daemon_thread_allows_process_exit():
     mock_sdk_client.close = Mock()
 
     # Simulate long-running request that never completes
+    stop = threading.Event()
+
     def infinite_request(**kwargs):
-        time.sleep(3600)  # Sleep for 1 hour
+        stop.wait(3600)
 
     mock_completions.create = infinite_request
 
@@ -247,10 +260,11 @@ def test_daemon_thread_allows_process_exit():
             client._request(messages, model, json_mode=False, context=context)
 
         # Verify close was called to interrupt socket
-        assert mock_sdk_client.close.called
+        _wait_until_close(mock_sdk_client)
+    stop.set()
 
-        # Main thread continues immediately (daemon thread still running in background)
-        # Test completes without waiting for daemon thread
+    # Main thread continues immediately (daemon thread still running in background)
+    # Test completes without waiting for daemon thread
 
 
 def test_httpx_timeout_configuration():
@@ -278,8 +292,10 @@ def test_httpx_timeout_configuration():
         import httpx
 
         assert isinstance(timeout_arg, httpx.Timeout)
-        assert timeout_arg.read == 900.0, f"Expected read timeout 900.0, got {timeout_arg.read}"
-        assert timeout_arg.write == 900.0
+        assert timeout_arg.read == 240.0, (
+            f"Expected hard-capped read timeout 240.0, got {timeout_arg.read}"
+        )
+        assert timeout_arg.write == 240.0
         assert timeout_arg.connect == 60.0
         assert timeout_arg.pool == 60.0
         http_client = call_kwargs.get("http_client")
@@ -291,3 +307,284 @@ def test_httpx_timeout_configuration():
 
         assert any(option[1] == socket_mod.SO_RCVTIMEO for option in options)
         assert any(option[1] == socket_mod.SO_SNDTIMEO for option in options)
+
+
+def _timeout_context():
+    return RequestContext(
+        operation="review.scan",
+        tier="fast",
+        max_tokens=1000,
+        emit=Mock(),
+        record_usage=Mock(),
+        attempt_scope=Mock(),
+    )
+
+
+def test_timeout_does_not_wait_for_blocking_close():
+    """SSL_shutdown/close() must not delay TimeoutError on the calling thread.
+
+    Production v1257: wait returned, then client.close() blocked ~20 minutes on a
+    silent Gemini socket, so attempt 2 never started after json_mode_selected.
+    """
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=1.0)
+    client = FakeClient(cfg)
+    client._credentials = ("test-key",)
+
+    mock_sdk_client = Mock()
+    stop = threading.Event()
+    mock_sdk_client.chat.completions.create = lambda **_kwargs: stop.wait(30)
+
+    def hanging_close():
+        stop.wait(30)
+
+    mock_sdk_client.close = hanging_close
+
+    started = time.monotonic()
+    with patch("openai.OpenAI", return_value=mock_sdk_client):
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(
+                [{"role": "user", "content": "scan"}],
+                ResolvedModel(model="test-model", options=FakeOptions()),
+                json_mode=True,
+                context=_timeout_context(),
+            )
+    elapsed = time.monotonic() - started
+    stop.set()
+    assert elapsed < 4.0, f"TimeoutError waited for close(): {elapsed:.2f}s"
+
+
+def test_timeout_covers_client_construction_before_http():
+    """Hang in OpenAI()/TLS setup after json_mode_selected must still time out."""
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=1.0)
+    client = FakeClient(cfg)
+    client._credentials = ("test-key",)
+
+    stop = threading.Event()
+
+    def hanging_openai(**_kwargs):
+        stop.wait(30)
+        raise AssertionError("constructor should have been aborted")
+
+    started = time.monotonic()
+    with patch("openai.OpenAI", hanging_openai):
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(
+                [{"role": "user", "content": "scan"}],
+                ResolvedModel(model="test-model", options=FakeOptions()),
+                json_mode=True,
+                context=_timeout_context(),
+            )
+    elapsed = time.monotonic() - started
+    stop.set()
+    assert elapsed < 4.0, f"constructor hang was not bounded: {elapsed:.2f}s"
+
+
+def test_timeout_covers_json_request_kwargs_build():
+    """Building json_object kwargs is inside the watchdog, not before it."""
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=1.0)
+    client = FakeClient(cfg)
+    client._credentials = ("test-key",)
+
+    stop = threading.Event()
+
+    def hanging_kwargs(*_args, **_kwargs):
+        stop.wait(30)
+        return {}
+
+    started = time.monotonic()
+    with (
+        patch.object(client, "_build_request_kwargs", hanging_kwargs),
+        patch("openai.OpenAI", return_value=Mock()),
+    ):
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(
+                [{"role": "user", "content": "x" * 8000}],
+                ResolvedModel(model="test-model", options=FakeOptions()),
+                json_mode=True,
+                context=_timeout_context(),
+            )
+    elapsed = time.monotonic() - started
+    stop.set()
+    assert elapsed < 4.0, f"kwargs build hang was not bounded: {elapsed:.2f}s"
+
+
+def test_timeout_fires_even_if_event_wait_ignores_timeout(monkeypatch: pytest.MonkeyPatch):
+    """v1257 py-spy: MainThread and watchdog stuck in Event.wait while SSL poll()
+    waited for headers. The deadline must not be implemented with Event.wait.
+    """
+    real_wait = threading.Event.wait
+
+    def stuck_wait(self, timeout=None):
+        if timeout is not None and 0 < timeout <= 0.1:
+            time.sleep(60)
+            return False
+        return real_wait(self, timeout)
+
+    monkeypatch.setattr(threading.Event, "wait", stuck_wait)
+
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=1.0)
+    client = FakeClient(cfg)
+    client._credentials = ("test-key",)
+
+    stop = threading.Event()
+    mock_sdk_client = Mock()
+    mock_sdk_client.chat.completions.create = lambda **_kwargs: stop.wait(30)
+    mock_sdk_client.close = Mock()
+
+    started = time.monotonic()
+    with patch("openai.OpenAI", return_value=mock_sdk_client):
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(
+                [{"role": "user", "content": "scan"}],
+                ResolvedModel(model="test-model", options=FakeOptions()),
+                json_mode=True,
+                context=_timeout_context(),
+            )
+    elapsed = time.monotonic() - started
+    stop.set()
+    assert elapsed < 4.0, f"Event.wait hang blocked TimeoutError: {elapsed:.2f}s"
+
+
+def test_wait_until_deadline_does_not_call_event_wait():
+    """stall-135214: MainThread sat in Event.wait at _wait_until:154 for >5 min."""
+    import inspect
+
+    from wenyi_core.llm.providers._openai_compatible import _wait_until
+
+    source = inspect.getsource(_wait_until)
+    assert "event.wait" not in source
+    assert "time.sleep" in source
+    done = threading.Event()
+    started = time.monotonic()
+    assert _wait_until(done, 0.2) is False
+    assert 0.2 <= time.monotonic() - started < 0.6
+    done.set()
+    assert _wait_until(done, 1.0) is True
+
+
+def test_clamp_ssl_timeout_never_polls_longer_than_slice():
+    from wenyi_core.llm.providers._openai_compatible import _clamp_ssl_timeout
+
+    assert _clamp_ssl_timeout(330.0, 1.0) == 1.0
+    assert _clamp_ssl_timeout(None, 1.0) == 1.0
+    assert _clamp_ssl_timeout(-1.0, 1.0) == 1.0
+    assert _clamp_ssl_timeout(0.0, 1.0) == 0.0
+    assert _clamp_ssl_timeout(0.25, 1.0) == 0.25
+
+
+def test_bound_ssl_polls_clamps_sslsocket_settimeout():
+    import ssl as ssl_mod
+
+    import wenyi_core.llm.providers._openai_compatible as openai_compat
+    from wenyi_core.llm.providers._openai_compatible import bound_ssl_polls
+
+    seen: list[float | None] = []
+
+    def capture(self, value):
+        seen.append(value)
+
+    orig = ssl_mod.SSLSocket.settimeout
+    openai_compat._SSL_POLL_DEPTH = 0
+    openai_compat._SSL_POLL_ORIG = None
+    ssl_mod.SSLSocket.settimeout = capture  # type: ignore[method-assign]
+    try:
+        with bound_ssl_polls(1.0):
+            ssl_mod.SSLSocket.settimeout(object(), 330.0)  # type: ignore[misc]
+            ssl_mod.SSLSocket.settimeout(object(), None)  # type: ignore[misc]
+    finally:
+        openai_compat._SSL_POLL_DEPTH = 0
+        openai_compat._SSL_POLL_ORIG = None
+        ssl_mod.SSLSocket.settimeout = orig  # type: ignore[method-assign]
+    assert seen == [1.0, 1.0]
+
+
+def test_hard_deadline_caps_below_external_watchdog(monkeypatch: pytest.MonkeyPatch):
+    from wenyi_core.llm.configuration import LLMConfig
+    from wenyi_core.llm.providers._openai_compatible import (
+        application_timeout_seconds,
+        hard_deadline_seconds,
+    )
+
+    monkeypatch.delenv("WENYI_LLM_HARD_DEADLINE_S", raising=False)
+    assert hard_deadline_seconds(300) == 240.0
+    assert application_timeout_seconds(300) == 240.0
+    monkeypatch.setenv("WENYI_LLM_HARD_DEADLINE_S", "90")
+    assert application_timeout_seconds(300) == 90.0
+    dump = LLMConfig().model_dump()
+    assert "WENYI_LLM_HARD_DEADLINE_S" not in str(dump)
+    assert "WENYI_LLM_ISOLATED_ATTEMPT" not in str(dump)
+    assert "hard_deadline" not in dump
+
+
+def test_isolated_attempts_skip_openai_mocks():
+    from wenyi_core.llm.providers._openai_compatible import isolated_attempts_enabled
+
+    with patch("openai.OpenAI", Mock()):
+        assert isolated_attempts_enabled() is False
+
+
+def test_isolated_attempts_skip_foreign_constructor():
+    """test_opencode_go FakeOpenAI is a real class, not unittest.mock."""
+    from wenyi_core.llm.providers._openai_compatible import isolated_attempts_enabled
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            raise AssertionError("test double must stay in-process")
+
+    with patch("openai.OpenAI", FakeOpenAI):
+        assert isolated_attempts_enabled() is False
+
+
+def test_isolated_attempts_default_on_for_real_sdk(monkeypatch: pytest.MonkeyPatch):
+    from wenyi_core.llm.providers._openai_compatible import isolated_attempts_enabled
+
+    monkeypatch.delenv("WENYI_LLM_ISOLATED_ATTEMPT", raising=False)
+    assert isolated_attempts_enabled() is True
+    monkeypatch.setenv("WENYI_LLM_ISOLATED_ATTEMPT", "0")
+    assert isolated_attempts_enabled() is False
+
+
+def test_deadline_stream_slices_ssl_polls_to_one_second():
+    """v1273: one poll(remaining≈330s) held the GIL in CPython 3.13.5 SSL_read."""
+    from wenyi_core.llm.providers._openai_compatible import _IO_SLICE_SECONDS, _DeadlineStream
+
+    seen: list[float] = []
+
+    class Inner:
+        def read(self, max_bytes, timeout=None):
+            seen.append(float(timeout))
+            if len(seen) < 3:
+                raise TimeoutError("slice")
+            return b"ok"
+
+        def get_extra_info(self, info):
+            return None
+
+    stream = _DeadlineStream(Inner(), time.monotonic() + 330.0, [])
+    assert stream.read(1024) == b"ok"
+    assert len(seen) == 3
+    assert all(timeout <= _IO_SLICE_SECONDS + 0.001 for timeout in seen)
+
+
+def test_main_returns_at_deadline_while_worker_blocks_in_read(monkeypatch: pytest.MonkeyPatch):
+    """Main thread must not wait for an SSL poll that ignores its timeout."""
+    monkeypatch.setenv("WENYI_LLM_HARD_DEADLINE_S", "1")
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=300.0)
+    client = FakeClient(cfg)
+    client._credentials = ("test-key",)
+    stop = threading.Event()
+    mock_sdk_client = Mock()
+    mock_sdk_client.chat.completions.create = lambda **_kwargs: stop.wait(60)
+    mock_sdk_client.close = Mock()
+    started = time.monotonic()
+    with patch("openai.OpenAI", return_value=mock_sdk_client):
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(
+                [{"role": "user", "content": "verify"}],
+                ResolvedModel(model="test-model", options=FakeOptions()),
+                json_mode=True,
+                context=_timeout_context(),
+            )
+    elapsed = time.monotonic() - started
+    stop.set()
+    assert elapsed < 3.0, f"main waited for SSL read: {elapsed:.2f}s"
