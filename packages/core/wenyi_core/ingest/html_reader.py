@@ -33,7 +33,7 @@ def _extract_chapter(
     preserve_inline_markup: bool = True,
 ) -> tuple[str, list[Segment], str]:
     """Extract a fragment using the selected markup policy and prefer its explicit title."""
-    detected_title, segments, template = annotate_epub_resource(
+    detected_title, segments, template, image_blocks = annotate_epub_resource(
         html,
         chapter_index,
         f"html-chapter-{chapter_index}.xhtml",

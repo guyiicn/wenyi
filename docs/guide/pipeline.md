@@ -68,7 +68,12 @@ With book understanding enabled, a chapter containing text must have a usable di
 before body translation starts. Digest failure stops preparation; a failed whole-book
 synopsis produces a warning and allows translation to use the chapter digests instead.
 Complete successful digests and style analysis are reusable on a matching retry.
-An unfinished chapter's individual prescan chunks are not separately checkpointed.
+A match includes the chapter source, digest version, analysis prompts, and the
+LLM routing dump (provider `base_url`, models and routes). Dummy API-key *values*
+are not part of that identity; changing `base_url` to an offline dummy rebuilds
+every chapter digest. To verify resume without real API calls, keep the production
+non-secret config and intercept that host. An unfinished chapter's individual
+prescan chunks are not separately checkpointed.
 
 <a id="context-and-glossary"></a>
 

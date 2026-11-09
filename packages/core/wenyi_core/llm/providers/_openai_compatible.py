@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
+import struct
+import threading
+import time
 from abc import abstractmethod
 from typing import Any, Generic, TypeVar
 
@@ -20,6 +25,134 @@ from ..usage import (
 
 OptionsT = TypeVar("OptionsT", bound=BaseModel)
 _JSON_MODE_INSTRUCTION = "Output must be valid json."
+_APPLICATION_TIMEOUT_FACTOR = 1.1
+_ABORT_JOIN_SECONDS = 2.0
+_WATCHDOG_POLL_SECONDS = 0.05
+
+
+def application_timeout_seconds(timeout: float) -> float:
+    """Wall-clock bound used when httpx/SSL read timeouts do not fire."""
+    return float(timeout) * _APPLICATION_TIMEOUT_FACTOR
+
+
+def httpx_timeout_config(timeout: float):
+    """Split connect/read/write/pool deadlines so a stalled peer cannot hang one phase."""
+    import httpx
+
+    bounded = max(0.001, float(timeout))
+    return httpx.Timeout(
+        connect=min(60.0, bounded),
+        read=bounded,
+        write=bounded,
+        pool=min(60.0, bounded),
+    )
+
+
+def os_socket_timeout_options(timeout: float) -> list[tuple[int, int, bytes]]:
+    """Kernel recv/send timeouts. Python SSLSocket.settimeout can miss SSL_read waits."""
+    seconds = max(1.0, float(timeout))
+    if os.name == "nt":
+        packed = struct.pack("@I", int(seconds * 1000))
+    else:
+        usec = int(round((seconds % 1.0) * 1_000_000))
+        packed = struct.pack("@ll", int(seconds), usec)
+    return [
+        (socket.SOL_SOCKET, socket.SO_RCVTIMEO, packed),
+        (socket.SOL_SOCKET, socket.SO_SNDTIMEO, packed),
+    ]
+
+
+def _iter_network_sockets(root: Any) -> list[socket.socket]:
+    """Collect live TCP/SSL sockets from an OpenAI/httpx/httpcore client tree."""
+    found: list[socket.socket] = []
+    seen: set[int] = set()
+    stack: list[Any] = [root]
+    while stack:
+        current = stack.pop()
+        ident = id(current)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        if isinstance(current, socket.socket):
+            found.append(current)
+            continue
+        if current is None or isinstance(current, (str, bytes, bytearray, memoryview)):
+            continue
+        module = getattr(type(current), "__module__", "") or ""
+        if module.startswith("unittest.mock"):
+            continue
+        extra = getattr(current, "get_extra_info", None)
+        if callable(extra):
+            try:
+                sock = extra("socket")
+            except Exception:
+                sock = None
+            if isinstance(sock, socket.socket):
+                found.append(sock)
+        if isinstance(current, dict):
+            stack.extend(current.values())
+            continue
+        if isinstance(current, (list, tuple, set, frozenset)):
+            stack.extend(current)
+            continue
+        for attr in (
+            "_client",
+            "_transport",
+            "_pool",
+            "_connection",
+            "_connections",
+            "_network_stream",
+            "_stream",
+            "_sock",
+            "connections",
+        ):
+            try:
+                value = getattr(current, attr)
+            except Exception:
+                continue
+            if callable(value) and attr == "connections":
+                try:
+                    value = value()
+                except Exception:
+                    continue
+            stack.append(value)
+    return found
+
+
+def abort_openai_client(client: Any) -> None:
+    """Unblock SSL_read by shutting the TCP fd down; do not wait for SSL_shutdown."""
+    if client is None:
+        return
+    for sock in _iter_network_sockets(client):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            sock.close()
+        except Exception:
+            pass
+    http_client = getattr(client, "_client", None)
+    if http_client is not None:
+        try:
+            http_client.close()
+        except Exception:
+            pass
+    try:
+        client.close()
+    except Exception:
+        pass
+
+
+def _wait_until(event: threading.Event, timeout: float) -> bool:
+    """Wait with a monotonic deadline so a missed Event timeout cannot hang forever."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while not event.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        event.wait(timeout=min(_WATCHDOG_POLL_SECONDS, remaining))
+    return True
 
 
 def base_request_kwargs(
@@ -120,19 +253,50 @@ def normalize_openai_usage(usage: Any, *, separate_cache_writes: bool = True) ->
 class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
     """Reuse one SDK connection; route selection and usage belong to the caller."""
 
+    def _openai_sdk_kwargs(self) -> dict[str, Any]:
+        """Extra ``OpenAI()`` constructor kwargs owned by a concrete provider."""
+        return {}
+
+    def _create_openai_client(self) -> Any:
+        """Build one isolated SDK client. Callers must close it."""
+        import httpx
+        from openai import OpenAI
+
+        self.validate_credentials()
+        timeout_config = httpx_timeout_config(self.cfg.timeout)
+        http_client = httpx.Client(
+            timeout=timeout_config,
+            transport=httpx.HTTPTransport(
+                retries=0,
+                http1=True,
+                http2=False,
+                socket_options=os_socket_timeout_options(self.cfg.timeout),
+                limits=httpx.Limits(max_keepalive_connections=0, max_connections=4),
+            ),
+            follow_redirects=True,
+            trust_env=True,
+        )
+        try:
+            client = OpenAI(
+                api_key=self.api_key() or "no-key",
+                base_url=self.base_url,
+                timeout=timeout_config,
+                max_retries=0,
+                http_client=http_client,
+                **self._openai_sdk_kwargs(),
+            )
+        except BaseException:
+            http_client.close()
+            raise
+        # Test doubles often swallow http_client. Close the unused pool immediately.
+        if getattr(client, "_client", None) is not http_client:
+            http_client.close()
+        return client
+
     def _ensure_client(self) -> Any:
         with self._client_lock:
             if self._client is None:
-                from openai import OpenAI
-
-                self.validate_credentials()
-                api_key = self.api_key()
-                self._client = OpenAI(
-                    api_key=api_key or "no-key",
-                    base_url=self.base_url,
-                    timeout=self.cfg.timeout,
-                    max_retries=0,
-                )
+                self._client = self._create_openai_client()
         return self._client
 
     def list_models(self) -> list[str]:
@@ -184,7 +348,68 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         )
         if response_format is not None:
             kwargs["response_format"] = response_format
-        response = self._ensure_client().chat.completions.create(**kwargs)
+
+        # Isolated client per request. Join-then-close() can miss silent-after-body
+        # TLS hangs: SSL_read does not return, join may not resume, and close() can
+        # deadlock on SSL_shutdown. Abort via socket.shutdown from a watchdog, and
+        # enforce SO_RCVTIMEO so the kernel unblocks SSL_read.
+        result_box: list[Any] = []
+        client_box: list[Any] = []
+        done = threading.Event()
+        aborted = threading.Event()
+        timeout_seconds = application_timeout_seconds(self.cfg.timeout)
+
+        def _do_request() -> None:
+            client = None
+            try:
+                client = self._create_openai_client()
+                client_box.append(client)
+                if aborted.is_set():
+                    abort_openai_client(client)
+                    raise TimeoutError(
+                        f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)"
+                    )
+                response = client.chat.completions.create(**kwargs)
+                result_box.append(("success", response))
+            except BaseException as error:
+                result_box.append(("error", error))
+            finally:
+                done.set()
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+
+        def _watchdog() -> None:
+            if _wait_until(done, timeout_seconds):
+                return
+            aborted.set()
+            if client_box:
+                abort_openai_client(client_box[0])
+
+        thread = threading.Thread(target=_do_request, daemon=True, name="llm-request")
+        watchdog = threading.Thread(target=_watchdog, daemon=True, name="llm-timeout-watchdog")
+        thread.start()
+        watchdog.start()
+        _wait_until(done, timeout_seconds)
+
+        if thread.is_alive() or aborted.is_set():
+            aborted.set()
+            if client_box:
+                abort_openai_client(client_box[0])
+            _wait_until(done, _ABORT_JOIN_SECONDS)
+            thread.join(timeout=_ABORT_JOIN_SECONDS)
+            raise TimeoutError(f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)")
+
+        if not result_box:
+            raise RuntimeError("LLM request thread finished without result")
+
+        status, payload = result_box[0]
+        if status == "error":
+            raise payload
+
+        response = payload
         context.record_usage(self._normalize_usage(getattr(response, "usage", None)))
         choice = response.choices[0]
         message = choice.message
@@ -192,7 +417,6 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         content = raw_content if isinstance(raw_content, str) else ""
         finish_reason = str(getattr(choice, "finish_reason", "")).lower()
         if finish_reason == "length":
-            # Truncated output is not a complete answer; never treat a mid-sentence cut as success.
             raise TruncatedResponseError(
                 "OpenAI-compatible response was truncated at the token limit"
             )

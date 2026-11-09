@@ -52,8 +52,8 @@ def assemble(
     standard EPUB with headings and paragraphs. TXT and Markdown rebuild chapters. HTML
     prefers source templates and otherwise rebuilds chapters. PDF is only available through
     BabelDOC layout-preserving fillback. DOCX reconstructs headings, paragraphs and tables.
-    With bilingual=True, include source text in the requested order, except PDF, which pairs
-    original pages on the left with translated pages on the right. preserve_source_style reuses
+    With bilingual=True, include source text in the requested order. PDF pairs matching pages
+    left to right in that order. preserve_source_style reuses
     original styles instead of muted CSS in EPUB/HTML or plain source text in DOCX.
     about_page appends the translation about page. punctuation_normalize changes only export
     copies, never chapter target state.
@@ -97,13 +97,32 @@ def assemble(
         )
     m = view.load_manifest()
     view.prepare()
+
+    # Validate inline preservation before export (fail-closed)
+    from .inline_validation import validate_inline_preservation_for_export
+
+    chapter_count = m.get("chapter_count")
+    if chapter_count is None:
+        # Legacy manifest without chapter_count: derive from chapters list
+        chapters_list = m.get("chapters", [])
+        chapter_count = len(chapters_list) if isinstance(chapters_list, list) else 0
+
+    if chapter_count > 0:
+        chapters = [view.load_chapter(i) for i in range(chapter_count)]
+        validate_inline_preservation_for_export(
+            chapters,
+            allow_proportional_fallback=False,
+            source_path=source_path,
+            manifest=m,
+        )
+
     target_lang = _manifest_target_lang(m)
     if out_format == "txt":
         out_path = out_path or _default_out(
             source_path, "txt", "", bilingual=bilingual, target_lang=target_lang
         )
         _ensure_parent_dir(out_path)
-        return _assemble_text(view, out_path, bilingual=bilingual, order=order)
+        return _assemble_text(view, source_path, out_path, bilingual=bilingual, order=order)
     if out_format == "html":
         out_path = out_path or _default_out(
             source_path, "html", "", bilingual=bilingual, target_lang=target_lang
@@ -122,14 +141,14 @@ def assemble(
             source_path, "markdown", "", bilingual=bilingual, target_lang=target_lang
         )
         _ensure_parent_dir(out_path)
-        return _assemble_markdown(view, out_path, bilingual=bilingual, order=order)
+        return _assemble_markdown(view, source_path, out_path, bilingual=bilingual, order=order)
     if out_format == "pdf":
         out_path = out_path or _default_out(
             source_path, "pdf", "", bilingual=bilingual, target_lang=target_lang
         )
         _ensure_parent_dir(out_path)
         return _assemble_pdf(
-            view, source_path, out_path, timeout=babeldoc_timeout, bilingual=bilingual
+            view, source_path, out_path, timeout=babeldoc_timeout, bilingual=bilingual, order=order
         )
     if out_format == "docx":
         out_path = out_path or _default_out(

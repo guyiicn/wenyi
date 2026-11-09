@@ -466,7 +466,7 @@ class TestEpubIngest(unittest.TestCase):
     def test_epub_annotation_only_marker_is_not_translated(self):
         html = '<html><body><p>[<a href="#tn2_1">←1</a>]</p></body></html>'
 
-        _title, segments, template = annotate_epub_resource(html, 0, "notes.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "notes.xhtml")
 
         self.assertEqual(segments, [])
         rendered = BeautifulSoup(template, "html.parser")
@@ -483,7 +483,7 @@ class TestEpubIngest(unittest.TestCase):
         html = """<html><body><p>Buck Mulligan<sup id="note-wrap"><a
         id="jpref1" href="notes.xhtml#jpnote1">2</a></sup> came down.</p></body></html>"""
 
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         self.assertEqual([segment.source for segment in segments], ["Buck Mulligan came down."])
         annotations = segments[0].meta["epub_annotations"]
@@ -520,7 +520,7 @@ class TestEpubIngest(unittest.TestCase):
         class="superscript"><a class="nounder" href="intro.html#intronotes_1"
         id="intronotes1">1</a></span></p></body></html>"""
 
-        _title, segments, template = annotate_epub_resource(html, 0, "intro.html")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "intro.html")
 
         self.assertEqual(segments[0].source, "Parmenides left a legacy.")
         item = segments[0].meta["epub_annotations"]["items"][0]
@@ -543,7 +543,7 @@ class TestEpubIngest(unittest.TestCase):
         href="intro.html#intronotes33" id="intronotes_33">33</a>
         The word “things” prejudges the question.</p></body></html>"""
 
-        _title, segments, template = annotate_epub_resource(html, 0, "intro.html")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "intro.html")
 
         self.assertEqual(segments[0].source, "The word “things” prejudges the question.")
         item = segments[0].meta["epub_annotations"]["items"][0]
@@ -563,7 +563,7 @@ class TestEpubIngest(unittest.TestCase):
         html = """<html><body><p id="note-1">An explanatory note.
         <a href="body.xhtml#ref-1">⤶</a></p></body></html>"""
 
-        _title, segments, _template = annotate_epub_resource(html, 0, "notes.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "notes.xhtml")
 
         self.assertEqual(segments[0].source, "An explanatory note.")
         item = segments[0].meta["epub_annotations"]["items"][0]
@@ -574,7 +574,7 @@ class TestEpubIngest(unittest.TestCase):
     def test_epub_plain_number_link_is_not_treated_as_note_marker(self):
         html = '<html><body><p>See <a href="#section33">33</a> for details.</p></body></html>'
 
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         self.assertEqual(segments[0].source, "See 33 for details.")
         item = segments[0].meta["epub_annotations"]["items"][0]
@@ -592,7 +592,7 @@ class TestEpubIngest(unittest.TestCase):
         <h2 id="1">Part One</h2><h2 id="ref1">Reference One</h2>
         <h2 id="key1">Key One</h2><h2 id="n2">Number Two</h2></body></html>"""
 
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         self.assertEqual(segments[0].source, "Read 1, reference 1, key 1, and number 2.")
         items = segments[0].meta["epub_annotations"]["items"]
@@ -614,7 +614,7 @@ class TestEpubIngest(unittest.TestCase):
         <ol><li id="n1"><a href="#ref1">1</a> Full note text.</li></ol>
         </body></html>"""
 
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         self.assertEqual([segment.source for segment in segments], ["Body.", "Full note text."])
         reference = segments[0].meta["epub_annotations"]["items"][0]
@@ -627,7 +627,7 @@ class TestEpubIngest(unittest.TestCase):
         <ol><li id="n2">Full note text. <a href="#ref2">2</a></li></ol>
         </body></html>"""
 
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         self.assertEqual([segment.source for segment in segments], ["Body.", "Full note text."])
         backlink = segments[1].meta["epub_annotations"]["items"][0]
@@ -669,7 +669,7 @@ class TestEpubIngest(unittest.TestCase):
         html = """<html><body><p><a id="ref-1" href="#note-1">国境の長いトンネル
         <sup id="mark-1">〔＊１〕</sup></a>を抜けると雪国であった。</p></body></html>"""
 
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         source = "国境の長いトンネルを抜けると雪国であった。"
         self.assertEqual([segment.source for segment in segments], [source])
@@ -694,7 +694,7 @@ class TestEpubIngest(unittest.TestCase):
         html = """<html><body><p>Alpha<sup><a href="#n1">1</a></sup> beta
         <a href="notes.xhtml#n2">linked phrase<sup>*</sup></a> end.</p></body></html>"""
 
-        _title, segments, template = annotate_epub_resource(html, 3, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 3, "body.xhtml")
 
         self.assertEqual(segments[0].source, "Alpha beta linked phrase end.")
         items = segments[0].meta["epub_annotations"]["items"]
@@ -714,7 +714,7 @@ class TestEpubIngest(unittest.TestCase):
     def test_epub_external_link_is_not_recorded_as_annotation(self):
         html = '<html><body><p>See <a href="https://example.com/x">website</a>.</p></body></html>'
 
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         self.assertEqual(segments[0].source, "See website.")
         self.assertNotIn("epub_annotations", segments[0].meta)
@@ -725,7 +725,7 @@ class TestEpubIngest(unittest.TestCase):
             '<html><body><p>See <a href="#full"><img src="thumb.png"/></a> now.</p></body></html>'
         )
 
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         self.assertEqual(segments[0].source, "See now.")
         self.assertNotIn("epub_annotations", segments[0].meta)
@@ -741,7 +741,7 @@ class TestEpubIngest(unittest.TestCase):
     def test_epub_semantic_subscript_inside_link_remains_in_source(self):
         html = '<html><body><p>Use <a href="#water">H<sub>2</sub>O</a> here.</p></body></html>'
 
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         self.assertEqual(segments[0].source, "Use H2O here.")
         item = segments[0].meta["epub_annotations"]["items"][0]
@@ -753,7 +753,7 @@ class TestEpubIngest(unittest.TestCase):
         html = """<html><body><p>Use <a href="references.xhtml#eq">x<sup>2</sup></a>
         and y<sup><a href="#equation">3</a></sup>.</p></body></html>"""
 
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         self.assertEqual(segments[0].source, "Use x2 and y3.")
         items = segments[0].meta["epub_annotations"]["items"]
@@ -949,7 +949,7 @@ class TestEpubIngest(unittest.TestCase):
         <ol><li><a href="body.xhtml#one">Chapter One</a></li></ol>
         </nav></body></html>"""
 
-        _title, segments, template = annotate_epub_resource(
+        _title, segments, template, _image_blocks = annotate_epub_resource(
             html,
             0,
             "nav.xhtml",
@@ -1099,7 +1099,7 @@ class TestEpubIngest(unittest.TestCase):
     def test_nested_fragment_anchor_survives_template_flattening(self):
         html = '<html><body><h2><span id="inside">Section</span></h2></body></html>'
 
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
 
         self.assertEqual(segments[0].source, "Section")
         self.assertIn('id="inside"', template)
@@ -1163,7 +1163,7 @@ class TestEpubIngest(unittest.TestCase):
 <p><ruby>漢字<rp>（</rp><rt>かんじ</rt><rp>）</rp></ruby>です</p>
 </body></html>"""
 
-        _title, segments, template = annotate_epub_resource(html, 0, "chapter.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "chapter.xhtml")
 
         self.assertEqual([segment.source for segment in segments], ["漢字〘かんじ〙です"])
         self.assertIn("<rt>かんじ</rt>", template)
@@ -1177,7 +1177,9 @@ class TestEpubIngest(unittest.TestCase):
 <p>満足に<ruby>与<rt>あずか</rt></ruby>りがちな疲れ</p>
 </body></html>"""
 
-        _title, segments, _template = annotate_epub_resource(html, 0, "chapter.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(
+            html, 0, "chapter.xhtml"
+        )
 
         self.assertEqual(
             [segment.source for segment in segments],
@@ -1194,7 +1196,9 @@ class TestEpubIngest(unittest.TestCase):
 <dl><dt>Term</dt><dd>Definition</dd></dl>
 </body></html>"""
 
-        _title, segments, _template = annotate_epub_resource(html, 0, "chapter.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(
+            html, 0, "chapter.xhtml"
+        )
 
         self.assertEqual(
             [segment.source for segment in segments],
@@ -1208,7 +1212,7 @@ class TestEpubIngest(unittest.TestCase):
 <div class="outer"><div class="calibre8">Second div paragraph.</div></div>
 </body></html>"""
 
-        _title, segments, template = annotate_epub_resource(
+        _title, segments, template, _image_blocks = annotate_epub_resource(
             html,
             0,
             "chapter.xhtml",
@@ -1229,7 +1233,7 @@ class TestEpubIngest(unittest.TestCase):
 <blockquote><div>Dedication One</div><div>Dedication Two</div></blockquote>
 </body></html>"""
 
-        _title, segments, template = annotate_epub_resource(
+        _title, segments, template, _image_blocks = annotate_epub_resource(
             html,
             0,
             "contents.xhtml",
@@ -1295,7 +1299,7 @@ class TestEpubIngest(unittest.TestCase):
 <p class="illustration"><img src="standalone.jpg"/></p>
 </body></html>"""
 
-        _title, segments, template = annotate_epub_resource(
+        _title, segments, template, _image_blocks = annotate_epub_resource(
             html,
             2,
             "chapter.xhtml",
@@ -1523,7 +1527,7 @@ class TestPagebreakProcessingInstruction(unittest.TestCase):
 
     def test_pagebreak_pi_is_excluded_from_segment_source(self):
         html = '<html><body><p><?pagebreak number="69"?>At first I was meek.</p></body></html>'
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         self.assertEqual([segment.source for segment in segments], ["At first I was meek."])
         self.assertIn('<?pagebreak number="69"?>', template)
         for segment in segments:
@@ -1542,7 +1546,7 @@ class TestPagebreakProcessingInstruction(unittest.TestCase):
 
     def test_pagebreak_mid_paragraph_survives_export_replace(self):
         html = '<html><body><p>Hello <?pagebreak number="70"?>world.</p></body></html>'
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         self.assertEqual([segment.source for segment in segments], ["Hello world."])
         for segment in segments:
             segment.target = "你好世界。"
@@ -1560,12 +1564,12 @@ class TestPagebreakProcessingInstruction(unittest.TestCase):
 
     def test_pagebreak_only_line_is_not_a_translation_target(self):
         html = '<html><body><p><?pagebreak number="70"?><br/>Then I grew bold.</p></body></html>'
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         self.assertEqual([segment.source for segment in segments], ["Then I grew bold."])
 
     def test_tender_pagebreak_variant_is_excluded(self):
         html = '<html><body><p><?tender pagebreak number="7"?>To VÉRA.</p></body></html>'
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         self.assertEqual([segment.source for segment in segments], ["To VÉRA."])
 
     def test_pagebreak_does_not_break_br_line_wrapping_of_comments(self):
@@ -1573,7 +1577,7 @@ class TestPagebreakProcessingInstruction(unittest.TestCase):
             '<html><body><p>First <?pagebreak number="8"?><br/>'
             "<!-- note -->Second</p></body></html>"
         )
-        _title, segments, template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         self.assertEqual([segment.source for segment in segments], ["First", "Second"])
         rendered = BeautifulSoup(template, "html.parser")
         paragraph = rendered.find("p")
@@ -1606,17 +1610,17 @@ class TestPagebreakProcessingInstruction(unittest.TestCase):
             '<html><body><p>See <a href="#x"><?pagebreak number="8"?>'
             "the note</a> below.</p></body></html>"
         )
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         self.assertEqual([segment.source for segment in segments], ["See the note below."])
 
     def test_pagebreak_only_line_inside_list_item_is_not_a_target(self):
         html = '<html><body><ul><li><?pagebreak number="9"?><br/>Only item.</li></ul></body></html>'
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         self.assertEqual([segment.source for segment in segments], ["Only item."])
 
     def test_pagebreak_inside_heading_is_excluded_from_title(self):
         html = '<html><body><h1>Chapter <?pagebreak number="10"?>Three</h1></body></html>'
-        title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         self.assertEqual(title, "Chapter Three")
         self.assertTrue(all("pagebreak" not in s.source for s in segments))
 
@@ -1626,7 +1630,7 @@ class TestPagebreakProcessingInstruction(unittest.TestCase):
             '<?pagebreak number="9"?>長いトンネル'
             '<sup id="mark-1">〔＊１〕</sup></a>を抜けると雪国であった。</p></body></html>'
         )
-        _title, segments, _template = annotate_epub_resource(html, 0, "body.xhtml")
+        _title, segments, _template, _image_blocks = annotate_epub_resource(html, 0, "body.xhtml")
         self.assertEqual(
             [segment.source for segment in segments],
             ["国境の長いトンネルを抜けると雪国であった。"],

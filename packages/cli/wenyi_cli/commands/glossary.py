@@ -6,6 +6,7 @@ import typer
 from rich.table import Table
 
 from .context import ContextAccessor
+from .glossary_import import register_import_command
 from .validation import (
     runstore_for_cli,
 )
@@ -18,6 +19,9 @@ def register_glossary_commands(app: typer.Typer, context: ContextAccessor) -> No
         help="Inspect glossary entries, check conflicts and resolve translations.",
     )
     app.add_typer(glossary_app, name="glossary", rich_help_panel="Glossary")
+
+    # Register import command
+    register_import_command(glossary_app, context)
 
     @glossary_app.command("list")
     def glossary_list(

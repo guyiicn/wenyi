@@ -140,7 +140,7 @@ def test_whole_source_link_rejoins_continuations_and_exports_without_model(
 ):
     marker = '<sup id="ref-note">1</sup>' if with_note_marker else ""
     html = f'<html><body><p><a href="notes.xhtml#n1">Ada met Bo.{marker}</a></p></body></html>'
-    _, parsed, template = annotate_epub_resource(html, 0, "chapter.xhtml")
+    _, parsed, template, _image_blocks = annotate_epub_resource(html, 0, "chapter.xhtml")
     first = parsed[0]
     source = first.source
     assert source == "Ada met Bo."

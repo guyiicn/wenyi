@@ -71,6 +71,20 @@ def test_help_advertises_translation_style_as_a_supported_option(
     tmp_path, monkeypatch, force_terminal
 ):
     monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", force_terminal)
+    if force_terminal:
+        # Autouse CLI fixtures force colorless consoles; this case must still see ANSI.
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setenv("FORCE_COLOR", "1")
+        monkeypatch.setenv("TERM", "xterm-256color")
+        from rich.console import Console as RichConsole
+
+        def console_factory(*args, **kwargs):
+            kwargs = dict(kwargs)
+            kwargs["no_color"] = False
+            kwargs["force_terminal"] = True
+            return RichConsole(*args, **kwargs)
+
+        monkeypatch.setattr("rich.console.Console", console_factory)
     result = CliRunner().invoke(app, ["--config", str(tmp_path / "config.yaml"), "--help"])
     assert result.exit_code == 0, result.output
     if force_terminal:

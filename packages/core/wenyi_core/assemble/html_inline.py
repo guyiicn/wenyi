@@ -379,12 +379,30 @@ def _replace_block_content(
     if not isinstance(source_length, int) or source_length < 0:
         source_length = 0
 
+    # Check for verified target inline positions
+    raw_target_inline = meta.get("target_inline")
+    target_inline = raw_target_inline if isinstance(raw_target_inline, dict) else {}
+    verified_ranges = target_inline.get("ranges") if target_inline else None
+
+    # Build tag->positions mapping from verified ranges
+    tag_positions: dict[str, list[tuple[int, int]]] = {}
+    if isinstance(verified_ranges, list):
+        for range_info in verified_ranges:
+            if not isinstance(range_info, dict):
+                continue
+            tag = range_info.get("tag")
+            start = range_info.get("start")
+            end = range_info.get("end")
+            if isinstance(tag, str) and isinstance(start, int) and isinstance(end, int):
+                tag_positions.setdefault(tag, []).append((start, end))
+
     restored: list[tuple[int, int, Tag]] = []
     for order, record in enumerate(nodes):
         if not isinstance(record, dict):
             continue
         inline_id = record.get("id")
         offset = record.get("offset")
+        tag = record.get("tag")
         if not isinstance(inline_id, str) or not isinstance(offset, int):
             continue
         node = el.find(True, attrs={INLINE_ID_ATTR: inline_id})
@@ -392,30 +410,112 @@ def _replace_block_content(
             continue
         node.extract()
         node.attrs.pop(INLINE_ID_ATTR, None)
-        if offset <= 0:
-            target_offset = 0
-        elif source_length <= 0 or offset >= source_length:
-            target_offset = len(text)
-        else:
-            target_offset = round(offset * len(text) / source_length)
+
+        # Clear emphasis tags since their text is already in the target
+        # Atomic tags (img, video) keep their original content
+        _EMPHASIS_TAGS = {"i", "em", "strong", "b"}
+        is_emphasis = isinstance(tag, str) and tag in _EMPHASIS_TAGS
+
+        # Use verified position if available
+        target_offset = None
+        has_verified_position = False
+        if isinstance(tag, str) and tag in tag_positions:
+            positions = tag_positions[tag]
+            if positions:
+                start, _end = positions.pop(0)
+                target_offset = start
+                has_verified_position = True
+
+        # Determine if this span should be cleared (CSS emphasis) or preserved (structural)
+        should_clear_span = False
+        is_structural_span = False
+        if isinstance(tag, str) and tag == "span":
+            # If span has verified position, it was translated -> clear it
+            # Otherwise, if it has id/class, it's structural -> keep it
+            if has_verified_position:
+                should_clear_span = True
+            elif node.has_attr("id") or node.has_attr("class"):
+                is_structural_span = True
+
+        if is_emphasis:
+            node.clear()
+        elif should_clear_span:
+            node.clear()
+
+        # Skip emphasis tags without verified positions (flattened during translation)
+        # Structural spans are allowed to fallback
+        if is_emphasis and not has_verified_position:
+            continue
+        if tag == "span" and not is_structural_span and not has_verified_position:
+            # Orphan span without position or structural role, skip it
+            continue
+
+        # Fallback to proportional mapping for atomic tags
+        if target_offset is None:
+            if offset <= 0:
+                target_offset = 0
+            elif source_length <= 0 or offset >= source_length:
+                target_offset = len(text)
+            else:
+                target_offset = round(offset * len(text) / source_length)
+
         restored.append((target_offset, len(nodes) + order, node))
+
+    # Convert nested emphasis tags to ranges to preserve nesting
+    emphasis_ranges: list[tuple[int, int, int, Tag, list[Tag]]] = []
+    if verified_ranges:
+        # Group by position to detect nesting
+        for idx, range_info in enumerate(verified_ranges):
+            if not isinstance(range_info, dict):
+                continue
+            tag = range_info.get("tag")
+            start = range_info.get("start")
+            end = range_info.get("end")
+            if not (isinstance(tag, str) and isinstance(start, int) and isinstance(end, int)):
+                continue
+            # Emphasis tags AND CSS emphasis spans need nesting support
+            if tag in ("em", "strong", "i", "b", "span"):
+                # Find the corresponding node
+                matched = False
+                for target_offset, order, node in restored:
+                    if (
+                        node.name == tag and abs(target_offset - start) < 3
+                    ):  # tolerance for rounding
+                        # Create a range entry
+                        # Note: node was already cleared, will be filled by render_ranges
+                        emphasis_ranges.append((start, end, order, node, []))
+                        matched = True
+                        break
+
+    # Remove emphasis tags from restored if they're in emphasis_ranges
+    if emphasis_ranges:
+        emphasis_nodes = {id(node) for _, _, _, node, _ in emphasis_ranges}
+        restored = [
+            (offset, order, node)
+            for offset, order, node in restored
+            if id(node) not in emphasis_nodes
+        ]
 
     # Extract ordinary inline nodes first: range links may contain images, which become inaccessible
     # after the link root has been extracted and cleared.
     annotation_points, annotation_ranges, annotation_fallbacks = _annotation_restorations(
         el, text, meta
     )
+    # Merge emphasis ranges with annotation ranges
+    all_ranges = list(annotation_ranges) + emphasis_ranges
     # Use stable shared ordering for annotations and inline nodes, with point annotations first at ties.
     restored = list(annotation_points) + restored
 
+    # Enable nested rendering if we have emphasis ranges that need nesting support
+    has_nesting = bool(meta.get(HTML_MARKUP_META_KEY)) or len(emphasis_ranges) > 0
     _render_text_with_nodes(
         soup,
         el,
         text,
         restored,
-        annotation_ranges,
+        all_ranges,
         annotation_fallbacks,
-        nested=bool(meta.get(HTML_MARKUP_META_KEY)),
+        nested=has_nesting,
     )
     for marker in self_markers:
         el.append(marker)

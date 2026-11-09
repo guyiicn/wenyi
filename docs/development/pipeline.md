@@ -42,6 +42,15 @@ Parsing and initialized translation are distinct states.
   analysis and cumulative usage. Missing work is not an excuse to reset those
   records. An unfinished chapter's digest chunks are not individually checkpointed.
 
+Chapter-digest reuse requires the same digest version, the same chapter source
+hash, the analysis `chapter_digest` language-policy fingerprint, and the same
+`llm` routing dump (`providers` including `base_url`/`timeout`/`max_retries`/
+`api_key_env`, models, tiers and routes). Dummy secret *values* are not part of
+that identity; changing the production endpoint or model graph is. Offline resume
+checks must keep the non-secret production config and intercept the network
+(hosts/proxy/local bind of the configured host). Pointing `base_url` at an
+unreachable dummy host is a real cache miss, not a resume bug.
+
 With book understanding enabled, every nonempty chapter needs a complete digest
 before body work. A failed chunk or merge cannot publish a partial chapter digest.
 A failed synopsis group invalidates the whole synopsis; stale retained analysis must

@@ -152,7 +152,8 @@ wenyi translate book.epub
   It can incur model usage.
 - `translate` reuses matching parsing and preparation, then translates pending
   work. Ordinary glossary extraction starts from completed source/translation
-  pairs during translation.
+  pairs during translation. Chapter digests reuse only when the LLM routing dump
+  still matches, including `base_url`; see [pipeline resume](pipeline.md).
 
 For an uncached MinerU PDF import, also set `MINERU_API_KEY` in the process
 environment. BabelDOC setup, PDF export eligibility, and other format-specific
@@ -297,6 +298,24 @@ zero. Counters are not currency estimates. Workflow timing excludes downtime
 between invocations; forced termination or failure before initialization may
 prevent the current duration from being saved.
 
+### Diagnostic logs
+
+The CLI keeps routine application and HTTP-client logs out of terminal progress
+output. Each invocation saves INFO-and-higher diagnostics to a separate
+`logs/wenyi-cli-<UTC timestamp>-<pid>-<unique suffix>.log` beside the selected
+configuration file. This location does not depend on `paths.state_dir`; for
+`--config /work/settings.yaml`, look under `/work/logs/`.
+
+Progress, results, and actionable error messages remain visible. On failure the
+CLI prints the diagnostic log's absolute path. If the log cannot be initialized,
+the command stops with a concise error instead of silently discarding diagnostics.
+`WENYI_LOG_FORMAT=json` selects JSON records in the file, not additional terminal
+output. Web and Desktop logging are unchanged.
+
+Each file rotates at 5 MiB with up to two `.1` / `.2` backups. Separate invocations
+do not share a file or delete older invocation logs. Review logs for private text
+and paths before sharing, and remove unneeded logs explicitly.
+
 <a id="proofreading"></a>
 
 ## Check terminology and proofread
@@ -305,10 +324,20 @@ prevent the current duration from being saved.
 wenyi glossary list book.epub
 wenyi glossary conflicts book.epub
 wenyi glossary resolve book.epub "source term" "chosen translation"
+wenyi glossary import book.epub --file terms.tsv
 ```
 
+`import` loads external glossary terms from a TSV file before translation.
+**No AI initialization required** - import can run on fresh projects before `prepare`.
+The TSV must have a header row with at minimum source and target columns (defaults:
+`english` and `preferred_zh_cn`). Optional columns include `type`, `aliases_and_regional`
+(pipe-separated), `usage_conflicts` (notes), and `status` (`verified`/`provisional`).
+Duplicate source entries are rejected; conflicts with existing translations are
+recorded but not silently overwritten. Use `--dry-run` to preview without changes.
+Run `wenyi glossary import --help` for column mapping options.
+
 `resolve` changes an **existing** term's authoritative translation and closes its
-conflicts; it is not a glossary import or a whole-book search-and-replace command.
+conflicts; it operates on terms already in the glossary, not the original TSV.
 The selection is available to subsequent translation and Review. Inspect the
 exported text and Review results for already completed passages.
 There is no standalone `polish` command: polishing runs within translation, and
@@ -406,6 +435,7 @@ for the installed version's syntax.
 | `glossary list` | `INPUT` | Established terms and status. |
 | `glossary conflicts` | `INPUT` | Unresolved terminology conflicts. |
 | `glossary resolve` | `INPUT SOURCE TARGET` | Resolve an existing term. |
+| `glossary import` | `INPUT`, `--file TSV`, `--dry-run` | Import external glossary before translation. |
 | `languages` | No options | List built-in language codes without credentials. |
 | `models` | [Subcommands below](#model-commands) | Routing, checks, live probes, and migrations. |
 | `language-policy` | Developer diagnostic | See [language-policy diagnostics](../development/pipeline.md#language-policies), not translation settings. |

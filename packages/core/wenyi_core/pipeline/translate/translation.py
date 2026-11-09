@@ -82,7 +82,7 @@ class TranslationService:
             progress_chapters = [chapter["index"] for chapter in manifest.get("chapters", [])]
 
         total, done = self.progress_counts(store, progress_chapters)
-        translation_history, source_corpus = self.load_translation_inputs(store)
+        translation_history, source_corpus = self.load_translation_inputs(store, chapter_filter=targets if only_chapter is not None else None)
         annotation_context_registry = store.load_annotation_contexts()
         policy = self._runtime.config.language_policy("translation")
         terminology = (
@@ -133,18 +133,22 @@ class TranslationService:
     @staticmethod
     def load_translation_inputs(
         store: Storage,
+        *,
+        chapter_filter: list[int] | None = None,
     ) -> tuple[dict[tuple[int, int], TranslatedSegmentEvidence], str]:
         """Read chapters once to rebuild translated-history indices and concatenate the source
-        corpus.
+        corpus. When chapter_filter is provided (for only_chapter), only load those chapters.
         """
         history: dict[tuple[int, int], TranslatedSegmentEvidence] = {}
         source_parts: list[str] = []
         manifest = store.load_manifest()
-        chapter_indices = sorted(
+        all_chapter_indices = sorted(
             chapter["index"]
             for chapter in manifest.get("chapters", [])
             if isinstance(chapter.get("index"), int)
         )
+        # Use chapter_filter if provided (for only_chapter isolation)
+        chapter_indices = chapter_filter if chapter_filter is not None else all_chapter_indices
         for chapter_index in chapter_indices:
             chapter = store.load_chapter(chapter_index)
             segments = chapter.text_segments
@@ -388,9 +392,14 @@ class TranslationService:
                 self._precision.mark_published(store, result)
             else:
                 result = self._batches.execute(plan, polish=self._runtime.config.pipeline.polish)
-                for segment, target, before_polish in zip(b, result.targets, result.before_polish):
+                for segment, target, before_polish, inline_meta in zip(
+                    b, result.targets, result.before_polish, result.inline_metas or []
+                ):
                     segment.target = target
                     segment.target_before_polish = before_polish
+                    if inline_meta:
+                        # Store verified target inline positions
+                        segment.meta["target_inline"] = inline_meta
                 # Persist translations incrementally so interruption resumes after this batch.
                 store.save_chapter(chapter)
             self._align_batch_context(store, chapter, batch_start, len(b))

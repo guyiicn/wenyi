@@ -14,7 +14,6 @@ from wenyi_core.ingest.epub_package import (
 )
 from wenyi_core.ingest.epub_toc import parse_toc_entries
 from wenyi_core.markup.anchors import fragment_anchor_map
-from wenyi_core.markup.contracts import INLINE_META_KEY
 from wenyi_core.markup.segments import annotate_epub_resource
 from wenyi_core.models.document import Document
 
@@ -45,12 +44,13 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             if href not in names:
                 continue
             html = _decode_markup(zf.read(href))
-            title, segments, template = annotate_epub_resource(
+            title, segments, template, image_blocks = annotate_epub_resource(
                 html,
                 resource_index,
                 href,
                 book_title=book_title,
                 skip_navigation=href in toc_paths,
+                epub_zip=zf,
             )
             resources.append(
                 {
@@ -60,6 +60,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
                     "segments": segments,
                     "template": template,
                     "fragment_anchors": fragment_anchor_map(template),
+                    "image_blocks": image_blocks,
                 }
             )
 
@@ -71,11 +72,12 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             if href in spine_hrefs or href not in names or href in toc_paths:
                 continue
             html = _decode_markup(zf.read(href))
-            title, segments, template = annotate_epub_resource(
+            title, segments, template, image_blocks = annotate_epub_resource(
                 html,
                 len(hrefs) + auxiliary_ordinal,
                 href,
                 book_title=book_title,
+                epub_zip=zf,
             )
             auxiliary_resources.append(
                 {
@@ -91,12 +93,12 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             [*resources, *auxiliary_resources],
         )
         chapters, split_strategy, split_toc_path = _logical_chapters(resources, toc_entries)
-        # Rebuild XHTML templates and inline layout deterministically from the original EPUB, not state.
-        # Preserve other format metadata and fields added by later stages unchanged.
+        # Preserve inline metadata for alignment and backfill.
+        # Templates are rebuilt from the original EPUB during export, but inline nodes need
+        # source-to-target alignment after translation.
         for chapter in chapters:
             chapter.template = None
-            for segment in chapter.segments:
-                segment.meta.pop(INLINE_META_KEY, None)
+            # Keep INLINE_META_KEY for alignment; do not discard inline markup information.
 
     return Document(
         title=book_title or os.path.splitext(os.path.basename(path))[0],

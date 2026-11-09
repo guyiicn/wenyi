@@ -86,14 +86,27 @@ def runstore_for(config: Config, input_path: str, *, console: Console | None = N
 
 
 def runstore_for_cli(
-    config: Config, input_path: str, *, console: Console | None = None
+    config: Config, input_path: str, *, console: Console | None = None, allow_missing: bool = False
 ) -> RunStore:
     # Deferred with the ingest stack; the base error class drags it in.
     from wenyi_core.models.errors import IngestError
+    from wenyi_core.storage.run_store import RunStore, translation_run_dir
 
     console = console or Console()
     try:
-        return runstore_for(config, input_path, console=console)
+        if allow_missing:
+            # For commands that can work with fresh projects (e.g., glossary import)
+            # Create store path but don't require existing manifest
+            require_input_file(input_path, console=console)
+            if os.path.splitext(input_path)[1].lower() == ".pdf":
+                title = os.path.splitext(os.path.basename(input_path))[0]
+            else:
+                doc = load_document(input_path, config.source_lang, config.target_lang)
+                title = doc.title
+            run_dir = translation_run_dir(config.state_dir, title, config.target_lang)
+            return RunStore(run_dir, create=True)
+        else:
+            return runstore_for(config, input_path, console=console)
     except (IngestError, OSError, ValueError) as error:
         console.print(f"[red]Error: {error}[/]")
         raise typer.Exit(1) from None

@@ -19,6 +19,198 @@ class AutofixPublisher:
         self._annotations = annotations
         self._docx_styles = docx_styles
 
+    def _has_inline_emphasis(self, segment: Any) -> bool:
+        """Check if segment has inline emphasis metadata that needs preservation."""
+        from ...markup.contracts import INLINE_META_KEY
+
+        # Check source inline metadata
+        raw_inline = segment.meta.get(INLINE_META_KEY)
+        if not isinstance(raw_inline, dict):
+            return False
+
+        nodes = raw_inline.get("nodes")
+        if not isinstance(nodes, list) or not nodes:
+            return False
+
+        # Count semantic emphasis nodes (em, strong, i, b, span with CSS emphasis)
+        emphasis_count = sum(
+            1
+            for node in nodes
+            if isinstance(node, dict) and node.get("tag") in ("i", "em", "strong", "b", "span")
+        )
+
+        return emphasis_count > 0
+
+    def _apply_with_inline_preservation(
+        self,
+        segment: Any,
+        before_text: str,
+        after_text: str,
+    ) -> tuple[bool, str, dict[str, Any] | None]:
+        """Apply autofix modification while preserving inline emphasis markers.
+
+        Returns:
+            (success, new_target, new_inline_metadata)
+            success=False if inline preservation failed
+        """
+        from ...markup.inline_markers import (
+            encode_inline_markers,
+            decode_inline_markers,
+            InlineNode,
+        )
+
+        # Get current target_inline metadata
+        target_inline = segment.meta.get("target_inline")
+        if not isinstance(target_inline, dict):
+            # No target_inline metadata, cannot preserve
+            return False, "", None
+
+        ranges = target_inline.get("ranges")
+        if not isinstance(ranges, list):
+            return False, "", None
+
+        # Convert ranges back to InlineNode objects
+        inline_nodes: list[InlineNode] = []
+        for r in ranges:
+            if not isinstance(r, dict):
+                continue
+            tag = r.get("tag")
+            start = r.get("start")
+            end = r.get("end")
+            if isinstance(tag, str) and isinstance(start, int) and isinstance(end, int):
+                marker_name = {"i": "I", "em": "EM", "strong": "STRONG", "b": "B"}.get(
+                    tag, tag.upper()
+                )
+                inline_nodes.append(
+                    InlineNode(tag=tag, start=start, end=end, marker_name=marker_name)
+                )
+
+        if not inline_nodes:
+            # No inline nodes to preserve
+            return False, "", None
+
+        # For autofix, we need to apply the text modification while preserving inline markers
+        # Strategy: compute the diff between before_text and after_text, then apply it
+        # while adjusting marker positions
+
+        # Simple case: check if this is a simple replacement/insertion/deletion
+        # For now, we'll re-encode the after_text with adjusted marker positions
+
+        # Calculate position mapping from before to after
+        # For a simple replacement like "AB" -> "ABC" (insertion at end)
+        # or "ABC" -> "AB" (deletion at end), we can adjust marker positions proportionally
+
+        # However, for reliability, we'll use a different approach:
+        # Parse the modification as an edit operation and shift markers accordingly
+
+        # For the initial implementation, we'll handle the common case:
+        # Text replacement that doesn't overlap with emphasis spans
+
+        # First, try to find the changed region
+        before_len = len(before_text)
+        after_len = len(after_text)
+
+        # Find common prefix and suffix
+        prefix_len = 0
+        while (
+            prefix_len < min(before_len, after_len)
+            and before_text[prefix_len] == after_text[prefix_len]
+        ):
+            prefix_len += 1
+
+        suffix_len = 0
+        while (
+            suffix_len < min(before_len, after_len) - prefix_len
+            and before_text[before_len - 1 - suffix_len] == after_text[after_len - 1 - suffix_len]
+        ):
+            suffix_len += 1
+
+        # The change is from [prefix_len : before_len - suffix_len] -> [prefix_len : after_len - suffix_len]
+        change_start = prefix_len
+        change_end_before = before_len - suffix_len
+        change_end_after = after_len - suffix_len
+
+        # Adjust inline node positions
+        adjusted_nodes: list[Any] = []
+        for node in inline_nodes:
+            # Check if this node is affected by the change
+            if node.end <= change_start:
+                # Node is before the change, keep as is
+                adjusted_nodes.append(
+                    InlineNode(
+                        tag=node.tag, start=node.start, end=node.end, marker_name=node.marker_name
+                    )
+                )
+            elif node.start >= change_end_before:
+                # Node is after the change, shift by delta
+                delta = change_end_after - change_end_before
+                adjusted_nodes.append(
+                    InlineNode(
+                        tag=node.tag,
+                        start=node.start + delta,
+                        end=node.end + delta,
+                        marker_name=node.marker_name,
+                    )
+                )
+            else:
+                # Node overlaps with the change region
+                # For now, we'll fail-closed: don't apply autofix if it affects emphasis
+                return False, "", None
+
+        # Now encode after_text with adjusted markers
+        try:
+            encoded_after = self._encode_text_with_inline_nodes(after_text, adjusted_nodes)
+        except Exception:
+            return False, "", None
+
+        # Decode the modified text
+        try:
+            clean_text, new_ranges, warnings = decode_inline_markers(encoded_after, inline_nodes)
+        except Exception:
+            # Decode failed
+            return False, "", None
+
+        # Check if decode had critical warnings
+        if warnings:
+            critical = any(
+                keyword in str(w).lower()
+                for w in warnings
+                for keyword in ["unclosed", "mismatched", "unmatched", "lost"]
+            )
+            if critical:
+                return False, "", None
+
+        # Build new target_inline metadata
+        new_inline = {
+            "version": 1,
+            "target_length": len(clean_text),
+            "ranges": [{"start": start, "end": end, "tag": tag} for start, end, tag in new_ranges],
+            "source_node_count": target_inline.get("source_node_count", len(inline_nodes)),
+            "target_node_count": len(new_ranges),
+            "validation_warnings": warnings if warnings else [],
+        }
+
+        # Check if all inline nodes were preserved
+        if len(new_ranges) == 0 and len(inline_nodes) > 0:
+            new_inline["preservation_failed"] = True
+            return False, "", None
+
+        return True, clean_text, new_inline
+
+    def _encode_text_with_inline_nodes(self, text: str, nodes: list[Any]) -> str:
+        """Encode text with inline markers at specified positions."""
+        # Sort nodes by position (reverse order for insertion)
+        sorted_nodes = sorted(nodes, key=lambda n: n.start, reverse=True)
+
+        result = text
+        for node in sorted_nodes:
+            # Insert end marker
+            result = result[: node.end] + f"[[{node.marker_name}_END]]" + result[node.end :]
+            # Insert start marker
+            result = result[: node.start] + f"[[{node.marker_name}_START]]" + result[node.start :]
+
+        return result
+
     def apply(
         self,
         store: Storage,
@@ -64,16 +256,48 @@ class AutofixPublisher:
                     row["reason"] = "invalid_index_location"
                     done += 1
                     continue
-                current = chapter.text_segments[text_index].target or ""
+                segment = chapter.text_segments[text_index]
+                current = segment.target or ""
                 if current == target:
                     row["status"] = "no_net_change" if current == before else "applied"
                     if current != before and row.get("alignment_status") != "completed":
                         applied_positions.append(text_index)
                 elif current == before and text_hash(current) == row.get("before_hash"):
-                    chapter.text_segments[text_index].target = target
-                    row["status"] = "applied"
-                    applied_positions.append(text_index)
-                    chapter_changed = True
+                    # Check if segment has inline emphasis metadata
+                    has_inline = self._has_inline_emphasis(segment)
+
+                    if has_inline:
+                        # Apply modification through encode→edit→decode to preserve inline markers
+                        success, new_target, new_inline = self._apply_with_inline_preservation(
+                            segment, before, target
+                        )
+                        if success:
+                            segment.target = new_target
+                            if new_inline:
+                                segment.meta["target_inline"] = new_inline
+                            row["status"] = "applied"
+                            applied_positions.append(text_index)
+                            chapter_changed = True
+                        else:
+                            # Inline preservation failed during autofix
+                            row["status"] = "failed"
+                            row["reason"] = "inline_preservation_failed_during_autofix"
+                    else:
+                        # No inline emphasis metadata - check for literal markers
+                        from ...markup.inline_markers import has_inline_markers
+                        
+                        if has_inline_markers(target):
+                            # Target contains literal [[I_START]]/[[EM_START]] markers but
+                            # no source inline metadata to validate against.
+                            # REJECT this modification to preserve fail-closed inline safety.
+                            row["status"] = "failed"
+                            row["reason"] = "contains_literal_inline_markers_without_metadata"
+                        else:
+                            # No markers - apply normally
+                            segment.target = target
+                            row["status"] = "applied"
+                            applied_positions.append(text_index)
+                            chapter_changed = True
                 else:
                     row["status"] = "failed"
                     row["reason"] = "formal_target_changed"

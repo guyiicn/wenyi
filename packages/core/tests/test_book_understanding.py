@@ -9,6 +9,7 @@ import pytest
 from wenyi_core.agents.analyzer import Analyzer
 from wenyi_core.agents.synopsis import Synopsizer
 from wenyi_core.config import Config
+from wenyi_core.llm.configuration import LLMConfig
 from wenyi_core.llm.limits import RequestCancelled, RequestStopped
 from wenyi_core.llm.providers.fake import FakeClient
 from wenyi_core.models.document import Chapter, Document, Segment
@@ -292,6 +293,94 @@ def test_synopsis_cache_tracks_the_model_configuration(tmp_path):
     runtime.config.llm = Config.from_dict({"llm": {"preset": "deepseek"}}).llm
     service.ensure_understanding(store)
     runtime.synopsizer.book_synopsis.assert_called_once()
+
+
+def _rewrite_default_provider(config, **fields):
+    raw = config.llm.model_dump(mode="json")
+    raw["providers"]["default"] = {**raw["providers"]["default"], **fields}
+    config.llm = LLMConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"base_url": "https://offline.invalid/v1"},
+        {"timeout": 12},
+        {"max_retries": 0},
+        {"api_key_env": "DUMMY_OFFLINE_KEY"},
+    ],
+)
+def test_llm_dump_changes_invalidate_saved_chapter_digests(tmp_path, fields):
+    """Digest identity includes the full LLM dump. Dummy unreachable endpoints must not reuse."""
+    service, store, runtime = _service(tmp_path)
+    service.ensure_understanding(store)
+    runtime.synopsizer.reset_mock()
+    runtime.synopsizer.digest_chapter.return_value = "Regenerated digest."
+    runtime.synopsizer.book_synopsis.return_value = "Regenerated synopsis."
+    _rewrite_default_provider(runtime.config, **fields)
+    assert service.ensure_understanding(store) == "Regenerated synopsis."
+    assert runtime.synopsizer.digest_chapter.call_count == 2
+
+
+def test_saved_chapter_digest_policy_is_language_fingerprint_plus_full_llm_dump(tmp_path):
+    """Digest identity is the analysis fingerprint plus the full LLM dump, nothing else."""
+    from wenyi_core.i18n.policy.models import content_hash
+
+    service, store, runtime = _service(tmp_path)
+    service.ensure_understanding(store)
+    expected = content_hash(
+        [
+            runtime.config.language_policy("analysis").task_fingerprint("chapter_digest"),
+            runtime.config.llm.model_dump(mode="json"),
+        ]
+    )
+    for index in (0, 1):
+        meta = store.load_chapter(index).meta
+        assert meta["source_digest_policy"] == expected
+        assert meta["source_digest_version"] == 2
+
+
+def test_same_translation_yaml_reuses_v1255_digests_and_completed_targets(tmp_path):
+    """A later version loading the same translation.yaml dump must reuse digests and targets."""
+    service, store, runtime = _service(tmp_path)
+    dump = runtime.config.llm.model_dump(mode="json")
+    assert service.ensure_understanding(store) == "Whole-book synopsis."
+    originals = []
+    for index in (0, 1):
+        chapter = store.load_chapter(index)
+        chapter.segments[0].target = f"已完成译文-{index}"
+        store.save_chapter(chapter)
+        originals.append(
+            {
+                "digest": chapter.meta["source_digest"],
+                "policy": chapter.meta["source_digest_policy"],
+                "sha": chapter.meta["source_digest_sha256"],
+                "target": chapter.segments[0].target,
+            }
+        )
+
+    runtime.synopsizer.reset_mock()
+    runtime.config.llm = LLMConfig.model_validate(dump)
+    assert service.ensure_understanding(store) == "Whole-book synopsis."
+    runtime.synopsizer.digest_chapter.assert_not_called()
+    runtime.synopsizer.book_synopsis.assert_not_called()
+    for index, original in enumerate(originals):
+        chapter = store.load_chapter(index)
+        assert chapter.meta["source_digest"] == original["digest"]
+        assert chapter.meta["source_digest_policy"] == original["policy"]
+        assert chapter.meta["source_digest_sha256"] == original["sha"]
+        assert chapter.segments[0].target == original["target"]
+
+
+def test_secret_values_are_not_part_of_digest_cache_identity(tmp_path, monkeypatch):
+    service, store, runtime = _service(tmp_path)
+    service.ensure_understanding(store)
+    runtime.synopsizer.reset_mock()
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "dummy-not-a-real-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-not-a-real-key")
+    assert service.ensure_understanding(store) == "Whole-book synopsis."
+    runtime.synopsizer.digest_chapter.assert_not_called()
+    runtime.synopsizer.book_synopsis.assert_not_called()
 
 
 def test_glossary_change_invalidates_synopsis_cache(tmp_path):

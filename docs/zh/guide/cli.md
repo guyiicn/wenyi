@@ -135,6 +135,7 @@ wenyi translate book.epub
   **它既不翻译正文，也不抽取或预填术语。** 此命令可能产生模型用量。
 - `translate` 复用匹配的解析与准备结果，再处理待译内容。
   常规术语抽取从翻译过程中完成的原译文对开始。
+  章节梗概仅在 LLM 路由转储（含 `base_url`）仍匹配时复用，见[流程续跑](pipeline.md)。
 
 首次通过 MinerU 导入未缓存的 PDF，还需在进程环境中设置 `MINERU_API_KEY`。
 BabelDOC 配置、PDF 导出条件及其他格式要求见[格式参考](../reference/formats.md)。
@@ -258,6 +259,23 @@ Token 总量跨续跑累计，不仅属于上次调用。缓存读取率为已�
 缺少计数表示“未知”，不是零。这些计数不是金额估算。
 工作流计时不包含两次命令之间的停机时间；强杀或初始化前失败可能无法保存本次时长。
 
+### 诊断日志
+
+CLI 不再把常规应用日志和 HTTP 客户端日志混入终端进度条。
+每次调用将 INFO 及以上级别的诊断信息保存到所选配置文件旁独立的
+`logs/wenyi-cli-<UTC 时间戳>-<进程号>-<唯一后缀>.log`。
+这个位置不受 `paths.state_dir` 影响；使用 `--config /work/settings.yaml` 时，
+日志位于 `/work/logs/`。
+
+进度、结果和需要处理的错误提示仍会显示。命令失败时，CLI 会打印诊断日志的绝对路径。
+日志无法初始化时，命令会简洁报错并停止，不会静默丢弃诊断信息。
+`WENYI_LOG_FORMAT=json` 只切换日志文件中的记录格式，不额外输出到终端。
+Web 和 Desktop 的日志策略不变。
+
+单文件按 5 MiB 轮转，最多保留 `.1`、`.2` 两份备份。
+不同调用不共用日志文件，也不会删除旧调用的日志。
+分享前检查其中的私有文本和路径，不再需要的日志应显式清理。
+
 <a id="proofreading"></a>
 
 ## 术语检查与校对
@@ -265,8 +283,15 @@ Token 总量跨续跑累计，不仅属于上次调用。缓存读取率为已�
 ```bash
 wenyi glossary list book.epub
 wenyi glossary conflicts book.epub
-wenyi glossary resolve book.epub "source term" "chosen translation"
+wenyi glossary resolve book.epub "原文术语" "选择译名"
+wenyi glossary import book.epub --file terms.tsv
 ```
+
+`import` 在翻译前从 TSV 文件导入外部术语。**无需 AI 初始化** - 可在 `prepare` 前对新项目执行导入。
+TSV 须含表头行，至少包含源文和目标列（默认列名：`english` 和 `preferred_zh_cn`）。
+可选列包括 `type`、`aliases_and_regional`（管道符分隔）、`usage_conflicts`（注释）和 `status`
+（`verified`/`provisional`）。重复源文条目将被拒绝；与现有译名冲突的条目会被记录但不会静默覆盖。
+使用 `--dry-run` 预览而不写入变更。运行 `wenyi glossary import --help` 查看列映射选项。
 
 `resolve` 修改**已有**词条的权威译名并关闭冲突，不是术语导入或全书查找替换命令。
 后续翻译和 Review 可以使用该选择；已完成段落仍需结合导出文本与 Review 结果检查。
@@ -353,6 +378,7 @@ BabelDOC PDF 导出仍需请求外部 bridge。
 | `glossary list` | `INPUT` | 已有术语与状态。 |
 | `glossary conflicts` | `INPUT` | 未解决术语冲突。 |
 | `glossary resolve` | `INPUT SOURCE TARGET` | 裁定已有词条。 |
+| `glossary import` | `INPUT`, `--file TSV`, `--dry-run` | 翻译前导入外部术语。 |
 | `languages` | 无选项 | 无需凭据，列出内置语言代码。 |
 | `models` | [下方子命令](#model-commands) | 路由、检查、真实探测和迁移。 |
 | `language-policy` | 开发诊断 | 见[语言策略诊断](../development/pipeline.md#language-policies)，不是翻译设置。 |

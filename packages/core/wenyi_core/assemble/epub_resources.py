@@ -103,7 +103,7 @@ def _render_epub_resources(
         html = UnicodeDammit(source_data).unicode_markup
         if html is None:
             html = source_data.decode("utf-8", errors="replace")
-        _title, annotated_segments, template = annotate_epub_resource(
+        _title, annotated_segments, template, _image_blocks = annotate_epub_resource(
             html,
             resource_index,
             href,

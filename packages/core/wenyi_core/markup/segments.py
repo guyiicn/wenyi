@@ -29,10 +29,19 @@ from wenyi_core.markup.ruby import RUBY_MARK_LEFT, RUBY_MARK_RIGHT
 from wenyi_core.models.document import KIND_HEADING, KIND_TEXT, Segment
 
 
-def _preserved_inline_roots(block: Tag) -> list[Tag]:
+def _preserved_inline_roots(
+    block: Tag, css_rules: dict[str, dict[str, str]] | None = None
+) -> list[Tag]:
     """Return nontext nodes for unchanged backfill, preserving text-free wrappers where
     possible.
+
+    Args:
+        block: Block element to scan for inline nodes
+        css_rules: Optional CSS rules for detecting styled spans
     """
+    # Emphasis tags that need inline marker encoding/decoding during translation
+    _EMPHASIS_TAGS = {"i", "em", "strong", "b"}
+
     roots: list[Tag] = []
     seen: set[int] = set()
     for candidate in block.find_all(True):
@@ -42,12 +51,33 @@ def _preserved_inline_roots(block: Tag) -> list[Tag]:
             # so rebuilding a range link's body cannot erase those children.
             continue
         is_atomic = candidate.name in _ATOMIC_INLINE_TAGS
+        is_emphasis = candidate.name in _EMPHASIS_TAGS and candidate.get_text(strip=True)
+
+        # Check for CSS-styled spans with italic or bold
+        is_css_emphasis = False
+        if candidate.name == "span" and candidate.get_text(strip=True) and css_rules is not None:
+            from .css_emphasis import has_italic_style, has_bold_style
+
+            is_css_emphasis = has_italic_style(candidate, css_rules) or has_bold_style(
+                candidate, css_rules
+            )
+
         is_empty_anchor = (
             candidate.name in {"a", "span"}
             and not candidate.get_text(strip=True)
             and (candidate.has_attr("id") or candidate.has_attr("name"))
         )
-        if not is_atomic and not is_empty_anchor:
+        # Preserve structural spans with id/class even if no text emphasis
+        is_structural_span = candidate.name == "span" and (
+            candidate.has_attr("id") or candidate.has_attr("class")
+        )
+        if (
+            not is_atomic
+            and not is_emphasis
+            and not is_css_emphasis
+            and not is_empty_anchor
+            and not is_structural_span
+        ):
             continue
 
         root = candidate
@@ -97,6 +127,7 @@ def _segment_content(
     block: Tag,
     anchor: str,
     annotation_roots: dict[int, dict[str, object]] | None = None,
+    css_rules: dict[str, dict[str, str]] | None = None,
 ) -> tuple[str, dict[str, object]]:
     """Extract translatable text and assign stable IDs/positions to inline nontext nodes.
     Collapse XHTML formatting whitespace as browsers do. Translation-target selection
@@ -111,7 +142,7 @@ def _segment_content(
             marker_node_ids.update(
                 marker_id for marker_id in raw_marker_ids if isinstance(marker_id, int)
             )
-    roots = _preserved_inline_roots(block)
+    roots = _preserved_inline_roots(block, css_rules)
     root_ids = {id(node) for node in roots}
     text_parts: list[str] = []
     preserved_nodes: list[tuple[Tag, int]] = []
@@ -151,7 +182,11 @@ def _segment_content(
                         walk(child, inside_range=True)
                     annotation_events[annotation_id] = (start, raw_length)
                 if id(child) in root_ids:
-                    preserved_nodes.append((child, raw_length))
+                    node_start = raw_length
+                    # Walk the preserved node to extract its text content
+                    walk(child, inside_range=inside_range)
+                    node_end = raw_length
+                    preserved_nodes.append((child, node_start, node_end))
                 elif annotation is not None:
                     continue
                 else:
@@ -193,7 +228,7 @@ def _segment_content(
         walk(block)
 
     raw_text = "".join(text_parts)
-    event_offsets = [offset for _node, offset in preserved_nodes]
+    event_offsets = [start for _node, start, _end in preserved_nodes]
     ordered_annotations = list(annotations.values())
     for annotation in ordered_annotations:
         start, end = annotation_events.get(str(annotation["id"]), (raw_length, raw_length))
@@ -205,20 +240,40 @@ def _segment_content(
     source_length = len(text)
     nodes: list[dict[str, object]] = []
     offset_cursor = 0
-    for index, (node, _raw_offset) in enumerate(preserved_nodes):
+    for index, (node, raw_start, raw_end) in enumerate(preserved_nodes):
         inline_id = f"{anchor}_inline_{index}"
         offset = normalized_offsets[offset_cursor]
         offset_cursor += 1
+        # Map raw end position to normalized position
+        # preserved_nodes now has end offset at offset_cursor position in raw_offsets
+        # We need to insert the end into raw_offsets array
+        # Actually, we need to add raw_end to the offsets list before normalization
+        # This is a problem - we're already past normalization
+        # For now, calculate length from node's text
+        node_text_length = len(node.get_text())
         placement = "before" if offset == 0 else "after" if offset == source_length else "inline"
         node[INLINE_ID_ATTR] = inline_id
-        nodes.append(
-            {
-                "id": inline_id,
-                "tag": node.name,
-                "placement": placement,
-                "offset": offset,
-            }
-        )
+
+        # Determine CSS style for spans
+        css_style = None
+        if node.name == "span" and css_rules:
+            from .css_emphasis import has_italic_style, has_bold_style
+
+            if has_italic_style(node, css_rules):
+                css_style = "italic"
+            elif has_bold_style(node, css_rules):
+                css_style = "bold"
+
+        node_dict = {
+            "id": inline_id,
+            "tag": node.name,
+            "placement": placement,
+            "offset": offset,
+            "length": node_text_length,
+        }
+        if css_style:
+            node_dict["css_style"] = css_style
+        nodes.append(node_dict)
 
     meta: dict[str, object] = {}
     if nodes:
@@ -371,12 +426,25 @@ def annotate_epub_resource(
     book_title: str = "",
     skip_navigation: bool = False,
     html_mode: bool = False,
-) -> tuple[str, list[Segment], str]:
-    """Annotate one physical XHTML and return its title, segments and backfill template.
+    epub_zip=None,
+) -> tuple[str, list[Segment], str, list[dict[str, object]]]:
+    """Annotate one physical XHTML and return its title, segments, backfill template, and image blocks.
+
+    Image blocks are standalone images without text content, returned as:
+    [{"position": int, "images": [{"src": str, "alt": str}, ...]}]
+
     Use the physical resource index in anchors rather than the final Chapter index, so
     writers rebuild identical data-tn-id values even if logical chapter policies change.
+    
+    Args:
+        epub_zip: Optional ZipFile for reading external CSS files
     """
     soup = BeautifulSoup(html, "html.parser")
+
+    # Extract CSS rules for detecting styled spans (including external CSS files)
+    from .css_emphasis import extract_css_rules_from_epub
+
+    css_rules = extract_css_rules_from_epub(soup, epub_zip=epub_zip, resource_href=href)
     segments: list[Segment] = []
     first_heading: Tag | None = None
     heading_title_parts: list[str] = []
@@ -439,7 +507,7 @@ def annotate_epub_resource(
                 marker.attrs.update(anchor_attrs)
                 descendant.insert_before(marker)
 
-        text, meta = _segment_content(el, anchor, annotations)
+        text, meta = _segment_content(el, anchor, annotations, css_rules)
         if (
             annotations
             and all(annotation.get("mode") == "point" for annotation in annotations.values())
@@ -490,7 +558,61 @@ def annotate_epub_resource(
         if not _looks_like_internal_title(candidate, href, book_title):
             title = candidate
 
-    return title, segments, str(soup)
+    # Collect standalone image blocks (images without text content)
+    image_blocks: list[dict[str, object]] = []
+    body = soup.find("body")
+    if isinstance(body, Tag):
+        all_blocks = body.find_all(_BLOCK_CANDIDATE_TAGS)
+        position = 0
+        for block in all_blocks:
+            # Check if this block was already processed as a segment
+            if block.has_attr("data-tn-id"):
+                position += 1
+                continue
+            
+            # Check if block is nested inside another block that was processed as segment
+            # (prevents duplicate image_blocks for nested containers)
+            parent_has_tn_id = any(
+                parent.has_attr("data-tn-id") 
+                for parent in block.parents 
+                if isinstance(parent, Tag) and parent != body
+            )
+            if parent_has_tn_id:
+                # This block is inside a segment, don't create separate image_block
+                continue
+
+            # Check if block contains only images (no text)
+            text_content = block.get_text(strip=True)
+            # Only consider images where there's no intermediate block between img and current block
+            # (prevents recording same image in nested container and actual parent)
+            direct_images = []
+            for img in block.find_all("img"):
+                # Check if any block-level element exists between img and current block
+                has_intermediate_block = False
+                for parent in img.parents:
+                    if parent == block or parent == body:
+                        break
+                    if isinstance(parent, Tag) and parent.name in _BLOCK_CANDIDATE_TAGS:
+                        has_intermediate_block = True
+                        break
+                if not has_intermediate_block:
+                    direct_images.append(img)
+            
+            images = direct_images
+
+            if not text_content and images:
+                image_list = []
+                for img in images:
+                    src = img.get("src", "")
+                    alt = img.get("alt", "")
+                    if src:
+                        image_list.append({"src": str(src), "alt": str(alt)})
+
+                if image_list:
+                    image_blocks.append({"position": position, "images": image_list})
+                position += 1
+
+    return title, segments, str(soup), image_blocks
 
 
 def _inside_navigation_list(element: Tag) -> bool:

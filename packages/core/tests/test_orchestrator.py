@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from wenyi_core.agents.reviewer import ReviewOutputError
 from wenyi_core.glossary.store import GlossaryStore
+from wenyi_core.llm.configuration import LLMConfig
 from wenyi_core.llm.providers.fake import FakeClient
 from wenyi_core.llm.usage import UsageSample
 from wenyi_core.models.document import Chapter, Segment
@@ -626,6 +627,15 @@ class TestBookUnderstanding(unittest.TestCase):
             self.assertTrue(analysis["book_synopsis"])
             self.assertFalse(any(call["operation"] == "synopsis.chapter" for call in resumed.calls))
             self.assertFalse(any(call["operation"] == "translation.body" for call in resumed.calls))
+
+            raw = cfg.llm.model_dump(mode="json")
+            raw["providers"]["default"]["base_url"] = "https://offline.invalid/v1"
+            cfg.llm = LLMConfig.model_validate(raw)
+            redirected = FakeClient(handler=routing_handler)
+            Orchestrator(cfg, client=redirected).run(txt)
+            self.assertTrue(
+                any(call["operation"] == "synopsis.chapter" for call in redirected.calls)
+            )
 
     def test_required_digest_failure_saves_usage_and_resumes_without_recounting(self):
         def failing_digest(messages, tier, json_mode):
