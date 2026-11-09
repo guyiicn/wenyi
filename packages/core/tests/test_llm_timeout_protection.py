@@ -405,3 +405,40 @@ def test_timeout_covers_json_request_kwargs_build():
     elapsed = time.monotonic() - started
     stop.set()
     assert elapsed < 4.0, f"kwargs build hang was not bounded: {elapsed:.2f}s"
+
+
+def test_timeout_fires_even_if_event_wait_ignores_timeout(monkeypatch: pytest.MonkeyPatch):
+    """v1257 py-spy: MainThread and watchdog stuck in Event.wait while SSL poll()
+    waited for headers. The deadline must not be implemented with Event.wait.
+    """
+    real_wait = threading.Event.wait
+
+    def stuck_wait(self, timeout=None):
+        if timeout is not None and 0 < timeout <= 0.1:
+            time.sleep(60)
+            return False
+        return real_wait(self, timeout)
+
+    monkeypatch.setattr(threading.Event, "wait", stuck_wait)
+
+    cfg = ProviderConfig(kind="test-provider", base_url="https://example.com", timeout=1.0)
+    client = FakeClient(cfg)
+    client._credentials = ("test-key",)
+
+    stop = threading.Event()
+    mock_sdk_client = Mock()
+    mock_sdk_client.chat.completions.create = lambda **_kwargs: stop.wait(30)
+    mock_sdk_client.close = Mock()
+
+    started = time.monotonic()
+    with patch("openai.OpenAI", return_value=mock_sdk_client):
+        with pytest.raises(TimeoutError, match="exceeded application timeout"):
+            client._request(
+                [{"role": "user", "content": "scan"}],
+                ResolvedModel(model="test-model", options=FakeOptions()),
+                json_mode=True,
+                context=_timeout_context(),
+            )
+    elapsed = time.monotonic() - started
+    stop.set()
+    assert elapsed < 4.0, f"Event.wait hang blocked TimeoutError: {elapsed:.2f}s"

@@ -386,6 +386,42 @@ def test_json_object_scan_times_out_while_verify_retries(tmp_path: Path):
             proc.wait(timeout=5)
 
 
+def test_tls_accept_without_response_headers_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """TLS handshake and HTTP body complete; server never writes headers.
+
+    Production v1257 py-spy: llm-request blocked in SSLSocket.read →
+    httpcore _receive_response_headers; main stayed in _wait_until. The
+    application deadline must raise a retryable timeout.
+    """
+    proc = None
+    try:
+        proc, port, count_path, cert = _start_stall_server(tmp_path, "silent", tls=True)
+        assert cert is not None
+        monkeypatch.setenv("SSL_CERT_FILE", str(cert))
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(cert))
+        client = _make_client(
+            f"https://127.0.0.1:{port}/v1",
+            timeout=1.0,
+            max_retries=0,
+        )
+        _seed_cached_json_object(client)
+        started = time.monotonic()
+        with pytest.raises(ProviderRequestError) as caught:
+            _call_json(client, _LARGE_BODY, "review.scan")
+        elapsed = time.monotonic() - started
+        assert elapsed < 5.0, f"TLS header stall hung for {elapsed:.2f}s"
+        assert elapsed >= 1.0
+        assert caught.value.reason == "timeout"
+        assert caught.value.resumable is True
+        assert int(count_path.read_text(encoding="utf-8")) == 1
+    finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
 @pytest.mark.parametrize("mode", ["silent", "trickle"])
 def test_stall_modes_converge_threads_and_fds(tmp_path: Path, mode: str):
     """Keep the previous silent/trickle convergence contract: no thread or fd growth."""

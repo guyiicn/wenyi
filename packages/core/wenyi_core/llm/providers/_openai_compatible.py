@@ -27,7 +27,6 @@ from ..usage import (
 OptionsT = TypeVar("OptionsT", bound=BaseModel)
 _JSON_MODE_INSTRUCTION = "Output must be valid json."
 _APPLICATION_TIMEOUT_FACTOR = 1.1
-_ABORT_JOIN_SECONDS = 2.0
 _WATCHDOG_POLL_SECONDS = 0.05
 _SOCKET_WALK_LIMIT = 1024
 _LOGGER = logging.getLogger(__name__)
@@ -63,6 +62,136 @@ def os_socket_timeout_options(timeout: float) -> list[tuple[int, int, bytes]]:
         (socket.SOL_SOCKET, socket.SO_RCVTIMEO, packed),
         (socket.SOL_SOCKET, socket.SO_SNDTIMEO, packed),
     ]
+
+
+def _cap_io_timeout(timeout: float | None, remaining: float) -> float:
+    """Never pass None/infinite into SSLSocket.settimeout: that poll()s forever."""
+    bounded = max(0.001, remaining)
+    if timeout is None:
+        return bounded
+    return max(0.001, min(float(timeout), bounded))
+
+
+class _DeadlineStream:
+    """Cap every TCP/TLS read and write to the remaining application deadline.
+
+    httpcore calls ``SSLSocket.settimeout(read_timeout)`` per recv. That uses
+    poll() and clears SO_RCVTIMEO. Production v1257 stacks sat in that poll()
+    waiting for headers while Event.wait on the deadline thread did not
+    recover. Re-apply kernel timeouts after wrap/settimeout, and never poll
+    longer than the wall-clock deadline.
+    """
+
+    def __init__(self, inner: Any, deadline: float, socket_options: list[Any]) -> None:
+        self._inner = inner
+        self._deadline = deadline
+        self._socket_options = socket_options
+        self._apply_kernel_timeouts()
+
+    def _remaining(self) -> float:
+        return self._deadline - time.monotonic()
+
+    def _apply_kernel_timeouts(self) -> None:
+        sock = None
+        extra = getattr(self._inner, "get_extra_info", None)
+        if callable(extra):
+            try:
+                sock = extra("socket")
+            except Exception:
+                sock = None
+        if not isinstance(sock, socket.socket):
+            sock = getattr(self._inner, "_sock", None)
+        if not isinstance(sock, socket.socket):
+            return
+        for option in self._socket_options:
+            try:
+                sock.setsockopt(*option)
+            except Exception:
+                pass
+
+    def _raise_if_expired(self) -> float:
+        remaining = self._remaining()
+        if remaining <= 0:
+            raise socket.timeout("LLM application deadline exceeded")
+        return remaining
+
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        remaining = self._raise_if_expired()
+        self._apply_kernel_timeouts()
+        return self._inner.read(max_bytes, timeout=_cap_io_timeout(timeout, remaining))
+
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        remaining = self._raise_if_expired()
+        self._apply_kernel_timeouts()
+        return self._inner.write(buffer, timeout=_cap_io_timeout(timeout, remaining))
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def start_tls(
+        self,
+        ssl_context: Any,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> _DeadlineStream:
+        remaining = self._raise_if_expired()
+        inner = self._inner.start_tls(
+            ssl_context,
+            server_hostname=server_hostname,
+            timeout=_cap_io_timeout(timeout, remaining),
+        )
+        wrapped = _DeadlineStream(inner, self._deadline, self._socket_options)
+        wrapped._apply_kernel_timeouts()
+        return wrapped
+
+    def get_extra_info(self, info: str) -> Any:
+        extra = getattr(self._inner, "get_extra_info", None)
+        if callable(extra):
+            return extra(info)
+        return None
+
+
+class _DeadlineBackend:
+    def __init__(self, inner: Any, deadline: float, socket_options: list[Any]) -> None:
+        self._inner = inner
+        self._deadline = deadline
+        self._socket_options = socket_options
+
+    def _backend(self) -> Any:
+        if self._inner is None:
+            import httpcore
+
+            self._inner = httpcore.SyncBackend()
+        return self._inner
+
+    def connect_tcp(self, *args: Any, **kwargs: Any) -> _DeadlineStream:
+        return _DeadlineStream(
+            self._backend().connect_tcp(*args, **kwargs),
+            self._deadline,
+            self._socket_options,
+        )
+
+    def connect_unix_socket(self, *args: Any, **kwargs: Any) -> _DeadlineStream:
+        return _DeadlineStream(
+            self._backend().connect_unix_socket(*args, **kwargs),
+            self._deadline,
+            self._socket_options,
+        )
+
+    def sleep(self, seconds: float) -> None:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(max(0.0, seconds), remaining))
+
+
+def attach_deadline_backend(transport: Any, deadline: float, socket_options: list[Any]) -> None:
+    """Wrap httpx/httpcore TCP+TLS streams with a remaining-time deadline."""
+    pool = getattr(transport, "_pool", None)
+    if pool is None:
+        return
+    inner = getattr(pool, "_network_backend", None)
+    pool._network_backend = _DeadlineBackend(inner, deadline, socket_options)
 
 
 def _force_close_socket(sock: socket.socket) -> None:
@@ -221,13 +350,20 @@ def abort_openai_client(client: Any) -> None:
 
 
 def _wait_until(event: threading.Event, timeout: float) -> bool:
-    """Wait with a monotonic deadline so a missed Event timeout cannot hang forever."""
+    """Sleep to a monotonic deadline. Do not use Event.wait(timeout).
+
+    v1257 production (CPython 3.13.5): py-spy showed MainThread and
+    llm-timeout-watchdog parked in Event.wait while llm-request sat in
+    SSLSocket.read → poll() waiting for response headers. Event.wait's
+    timeout did not recover, so the 330s bound never fired. time.sleep
+    releases the GIL independently of Condition locks.
+    """
     deadline = time.monotonic() + max(0.0, timeout)
     while not event.is_set():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
-        event.wait(timeout=min(_WATCHDOG_POLL_SECONDS, remaining))
+        time.sleep(min(_WATCHDOG_POLL_SECONDS, remaining))
     return True
 
 
@@ -333,22 +469,26 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         """Extra ``OpenAI()`` constructor kwargs owned by a concrete provider."""
         return {}
 
-    def _create_openai_client(self) -> Any:
+    def _create_openai_client(self, *, deadline: float | None = None) -> Any:
         """Build one isolated SDK client. Callers must close it."""
         import httpx
         from openai import OpenAI
 
         self.validate_credentials()
         timeout_config = httpx_timeout_config(self.cfg.timeout)
+        socket_options = os_socket_timeout_options(self.cfg.timeout)
+        transport = httpx.HTTPTransport(
+            retries=0,
+            http1=True,
+            http2=False,
+            socket_options=socket_options,
+            limits=httpx.Limits(max_keepalive_connections=0, max_connections=4),
+        )
+        if deadline is not None:
+            attach_deadline_backend(transport, deadline, socket_options)
         http_client = httpx.Client(
             timeout=timeout_config,
-            transport=httpx.HTTPTransport(
-                retries=0,
-                http1=True,
-                http2=False,
-                socket_options=os_socket_timeout_options(self.cfg.timeout),
-                limits=httpx.Limits(max_keepalive_connections=0, max_connections=4),
-            ),
+            transport=transport,
             follow_redirects=True,
             trust_env=True,
         )
@@ -432,6 +572,7 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
         done = threading.Event()
         aborted = threading.Event()
         timeout_seconds = application_timeout_seconds(self.cfg.timeout)
+        deadline = time.monotonic() + timeout_seconds
 
         def _do_request() -> None:
             client = None
@@ -445,7 +586,7 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
                 )
                 if response_format is not None:
                     kwargs["response_format"] = response_format
-                client = self._create_openai_client()
+                client = self._create_openai_client(deadline=deadline)
                 client_box.append(client)
                 if aborted.is_set():
                     abort_openai_client(client)
@@ -491,7 +632,6 @@ class OpenAICompatibleBaseClient(ProviderAdapter, Generic[OptionsT]):
             aborted.set()
             if client_box:
                 abort_openai_client(client_box[0])
-            _wait_until(done, _ABORT_JOIN_SECONDS)
             raise TimeoutError(f"LLM request exceeded application timeout ({timeout_seconds:.1f}s)")
 
         if not result_box:
